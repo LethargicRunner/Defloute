@@ -3,19 +3,29 @@ package fr.lethargicrunner.defloute
 import android.graphics.Bitmap
 
 /**
- * Detection du flou par variance du Laplacien, en pur Kotlin (zero dependance).
+ * Detection du flou par variance du Laplacien, multi-echelle (pur Kotlin, zero dependance).
  *
  * Principe : le Laplacien mesure les variations locales d'intensite.
  * Une image nette a des contours marques -> forte variance.
  * Une image floue est "plate" -> faible variance.
  *
- * La methode [laplacianVariance] est pure (tableau de luminances en entree),
- * donc testable unitairement sans Android.
+ * Piege connu : une image floue mais BRUITEE garde une variance elevee et passe
+ * le seuil absolu. D'ou la decision multi-echelle : une image nette perd presque
+ * toute sa variance quand on la reduit (les details fins disparaissent), alors
+ * qu'une image floue/bruitee garde un ratio eleve entre score grossier et score fin.
+ *
+ * Les fonctions de decision sont pures, donc testables sans Android.
  */
 object BlurDetector {
 
-    /** Seuil par defaut en dessous duquel une image est consideree floue. */
+    /** Seuil absolu (score fin) en dessous duquel une image est floue. */
     const val DEFAULT_BLUR_THRESHOLD: Double = 100.0
+
+    /**
+     * Ratio (score grossier / score fin) au-dessus duquel une image est floue.
+     * Image nette reduite : ratio faible (souvent < 0.1). Image floue/bruitee : ratio eleve.
+     */
+    const val DEFAULT_RATIO_THRESHOLD: Double = 0.25
 
     /**
      * Calcule la variance du Laplacien sur un plan de luminance.
@@ -72,11 +82,29 @@ object BlurDetector {
     }
 
     /**
-     * Score de nettete complet d'un Bitmap deja decode (l'appelant gere le sampling).
+     * Score de nettete d'un Bitmap deja decode.
      */
     fun score(bitmap: Bitmap): Double =
         laplacianVariance(luminances(bitmap), bitmap.width, bitmap.height)
 
-    /** Indique si un score correspond a une image floue. */
+    /**
+     * Decision multi-echelle.
+     *
+     * @param fine   score a l'echelle fine (max ~512 px).
+     * @param coarse score a l'echelle grossiere (max ~128 px).
+     */
+    fun isBlurryMultiScale(
+        fine: Double,
+        coarse: Double,
+        fineThreshold: Double = DEFAULT_BLUR_THRESHOLD,
+        ratioThreshold: Double = DEFAULT_RATIO_THRESHOLD
+    ): Boolean {
+        if (fine < fineThreshold) return true
+        if (coarse <= 0.0 || fine <= 0.0) return false
+        // Une image nette s'effondre a l'echelle grossiere ; une floue/bruitee non.
+        return coarse / fine > ratioThreshold
+    }
+
+    /** Indique si un score unique (ancienne methode) correspond a une image floue. */
     fun isBlurry(score: Double, threshold: Double = DEFAULT_BLUR_THRESHOLD): Boolean = score < threshold
 }

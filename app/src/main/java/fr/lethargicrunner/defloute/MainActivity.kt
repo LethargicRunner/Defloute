@@ -1,7 +1,5 @@
 package fr.lethargicrunner.defloute
 
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -13,12 +11,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.documentfile.provider.DocumentFile
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 class MainActivity : ComponentActivity() {
 
@@ -40,27 +34,11 @@ fun DeflouteApp() {
 
 @Composable
 private fun AppBody(modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-
-    var treeUri by remember { mutableStateOf<Uri?>(null) }
-    var scanning by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
-    var results by remember { mutableStateOf<List<ImageResult>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
+    val vm: ScanViewModel = viewModel()
+    val state by vm.state.collectAsState()
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: SecurityException) {
-            }
-            treeUri = uri
-            results = emptyList()
-        }
+        if (uri != null) vm.setFolder(uri)
     }
 
     Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -68,65 +46,43 @@ private fun AppBody(modifier: Modifier = Modifier) {
 
         Button(
             onClick = { picker.launch(null) },
-            enabled = !scanning
+            enabled = !state.scanning
         ) {
-            Text(if (treeUri == null) "Choisir un dossier" else "Changer de dossier")
+            Text(if (state.treeUri == null) "Choisir un dossier" else "Changer de dossier")
         }
 
-        treeUri?.let {
-            Text("Dossier : " + (DocumentFile.fromTreeUri(context, it)?.name ?: "?"))
-        }
+        state.folderName?.let { Text("Dossier : " + it) }
 
         Button(
-            onClick = {
-                val root = treeUri?.let { DocumentFile.fromTreeUri(context, it) }
-                if (root == null) {
-                    error = "Dossier invalide"
-                } else {
-                    scanning = true
-                    error = null
-                    results = emptyList()
-                    scope.launch {
-                        try {
-                            results = withContext(Dispatchers.IO) {
-                                ImageScanner.scan(context, root) { done, total -> progress = done to total }
-                            }
-                        } catch (e: Exception) {
-                            error = e.message ?: "Erreur inconnue"
-                        } finally {
-                            scanning = false
-                            progress = null
-                        }
-                    }
-                }
-            },
-            enabled = treeUri != null && !scanning
+            onClick = { vm.startScan() },
+            enabled = state.treeUri != null && !state.scanning
         ) {
-            Text(if (scanning) "Analyse..." else "Analyser le dossier")
+            Text(if (state.scanning) "Analyse..." else "Analyser le dossier")
         }
 
-        progress?.let { (done, total) ->
+        if (state.scanning || state.analysed > 0) {
             LinearProgressIndicator(
-                progress = { if (total > 0) done.toFloat() / total else 0f },
+                progress = { if (state.total > 0) state.analysed.toFloat() / state.total else 0f },
                 modifier = Modifier.fillMaxWidth()
             )
-            Text("" + done + " / " + total + " images")
+            Text("" + state.analysed + " / " + state.total + " images")
         }
 
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
-        if (results.isNotEmpty()) {
-            val blurryCount = results.count { it.blurry }
-            val total = results.size
+        if (state.results.isNotEmpty()) {
+            val blurryCount = state.results.count { it.blurry }
+            val total = state.results.size
             Text("" + blurryCount + " floues / " + total + " images (tri : plus floues d'abord)")
             LazyColumn {
-                items(results) { r ->
+                items(state.results) { r ->
+                    val label = if (r.blurry) "FLOUE" else "nette"
+                    val scoreTxt = "%.0f".format(r.fineScore)
+                    val ratioTxt = if (r.fineScore > 0) "%.2f".format(r.coarseScore / r.fineScore) else "n/a"
                     ListItem(
                         headlineContent = { Text(r.name) },
                         supportingContent = {
-                            val label = if (r.blurry) "FLOUE" else "nette"
-                            val scoreTxt = "%.0f".format(r.score)
-                            Text(label + " — score " + scoreTxt + " — " + r.sizeBytes / 1024 + " Ko")
+                            Text(label + " — score " + scoreTxt + " (ratio " + ratioTxt + ") — " + r.sizeBytes / 1024 + " Ko")
                         }
                     )
                     HorizontalDivider()

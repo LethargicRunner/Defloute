@@ -1,6 +1,7 @@
 package fr.lethargicrunner.defloute
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -11,7 +12,7 @@ class BlurDetectorTest {
         val gray = IntArray(16) { 128 } // 4x4 uniforme
         val score = BlurDetector.laplacianVariance(gray, 4, 4)
         assertEquals(0.0, score, 1e-9)
-        assertTrue(BlurDetector.isBlurry(score))
+        assertTrue(BlurDetector.isBlurryMultiScale(score, score))
     }
 
     @Test
@@ -26,7 +27,29 @@ class BlurDetectorTest {
 
         assertTrue(sharp > smoothScore)
         assertTrue(sharp > BlurDetector.DEFAULT_BLUR_THRESHOLD)
-        assertTrue(BlurDetector.isBlurry(smoothScore))
+    }
+
+    @Test
+    fun decision_multiechelle_image_nette() {
+        // Score fin eleve, score grossier effondre : image nette
+        val fine = 2000.0
+        val coarse = 60.0   // ratio 0.03 : les details fins disparaissent en reduisant
+        assertFalse(BlurDetector.isBlurryMultiScale(fine, coarse))
+    }
+
+    @Test
+    fun decision_multiechelle_flou_bruite() {
+        // Cas du faux positif rapporte : score fin eleve (bruit) mais l'image
+        // reste plate a l'echelle grossiere -> floue quand meme.
+        val fine = 300.0
+        val coarse = 150.0  // ratio 0.5 > seuil
+        assertTrue(BlurDetector.isBlurryMultiScale(fine, coarse))
+    }
+
+    @Test
+    fun decision_multiechelle_score_fin_faible() {
+        // Score fin sous le seuil absolu : floue, quel que soit le grossier
+        assertTrue(BlurDetector.isBlurryMultiScale(42.0, 0.0))
     }
 
     @Test
