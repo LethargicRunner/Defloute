@@ -9,7 +9,7 @@ class BlurDetectorTest {
 
     @Test
     fun image_uniforme_a_score_nul() {
-        val gray = IntArray(16) { 128 } // 4x4 uniforme
+        val gray = IntArray(16) { 128 }
         val score = BlurDetector.laplacianVariance(gray, 4, 4)
         assertEquals(0.0, score, 1e-9)
         assertTrue(BlurDetector.isBlurryMultiScale(score, score))
@@ -17,11 +17,9 @@ class BlurDetectorTest {
 
     @Test
     fun damier_net_a_un_score_superieur_au_flou() {
-        // Damier haute frequence = tres net
         val checker = IntArray(64) { i -> if ((i / 8 + i % 8) % 2 == 0) 255 else 0 }
         val sharp = BlurDetector.laplacianVariance(checker, 8, 8)
 
-        // Degradation douce autour de la moyenne = tres flou
         val smooth = IntArray(64) { i -> 128 + ((i / 8) - 3) * 4 }
         val smoothScore = BlurDetector.laplacianVariance(smooth, 8, 8)
 
@@ -31,24 +29,27 @@ class BlurDetectorTest {
 
     @Test
     fun decision_multiechelle_image_nette() {
-        // Score fin eleve, score grossier effondre : image nette
-        val fine = 2000.0
-        val coarse = 60.0   // ratio 0.03 : les details fins disparaissent en reduisant
-        assertFalse(BlurDetector.isBlurryMultiScale(fine, coarse))
+        // Image nette : score fin eleve, score grossier effondre (ratio 0.03)
+        assertFalse(BlurDetector.isBlurryMultiScale(2000.0, 60.0))
     }
 
     @Test
     fun decision_multiechelle_flou_bruite() {
-        // Cas du faux positif rapporte : score fin eleve (bruit) mais l'image
-        // reste plate a l'echelle grossiere -> floue quand meme.
-        val fine = 300.0
-        val coarse = 150.0  // ratio 0.5 > seuil
-        assertTrue(BlurDetector.isBlurryMultiScale(fine, coarse))
+        // Flou bruite : score fin qui passe le seuil absolu MAIS ratio eleve
+        assertTrue(BlurDetector.isBlurryMultiScale(300.0, 150.0))
     }
 
     @Test
-    fun decision_multiechelle_score_fin_faible() {
-        // Score fin sous le seuil absolu : floue, quel que soit le grossier
+    fun decision_multiechelle_seuils_reglables() {
+        // Ratio 0.25 (ancienne valeur, trop stricte) : cette photo normale serait faussement floue
+        val fine = 200.0
+        val coarse = 80.0  // ratio 0.4
+        assertFalse(BlurDetector.isBlurryMultiScale(fine, coarse, 100.0, 0.5))
+        assertTrue(BlurDetector.isBlurryMultiScale(fine, coarse, 100.0, 0.25))
+    }
+
+    @Test
+    fun decision_score_fin_faible() {
         assertTrue(BlurDetector.isBlurryMultiScale(42.0, 0.0))
     }
 

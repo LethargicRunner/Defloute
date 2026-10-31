@@ -71,14 +71,38 @@ private fun AppBody(modifier: Modifier = Modifier) {
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
         if (state.results.isNotEmpty()) {
-            val blurryCount = state.results.count { it.blurry }
+            // ---- Reglages des seuils : effet immediat, pas de re-scan ----
+            Text("Reglages", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Seuil de score : " + state.fineThreshold.toInt() +
+                    "  (en dessous = floue)",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Slider(
+                value = state.fineThreshold.toFloat(),
+                onValueChange = { vm.setFineThreshold(it.toDouble()) },
+                valueRange = 0f..500f
+            )
+            Text(
+                "Seuil de ratio : " + String.format("%.2f", state.ratioThreshold) +
+                    "  (au-dessus = floue, cible le flou bruite)",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Slider(
+                value = state.ratioThreshold.toFloat(),
+                onValueChange = { vm.setRatioThreshold(it.toDouble()) },
+                valueRange = 0f..1.5f
+            )
+
+            val blurryCount = state.results.count { it.isBlurry(state.fineThreshold, state.ratioThreshold) }
             val total = state.results.size
             Text("" + blurryCount + " floues / " + total + " images (tri : plus floues d'abord)")
+
             LazyColumn {
                 items(state.results) { r ->
-                    val label = if (r.blurry) "FLOUE" else "nette"
+                    val label = if (r.isBlurry(state.fineThreshold, state.ratioThreshold)) "FLOUE" else "nette"
                     val scoreTxt = "%.0f".format(r.fineScore)
-                    val ratioTxt = if (r.fineScore > 0) "%.2f".format(r.coarseScore / r.fineScore) else "n/a"
+                    val ratioTxt = if (r.fineScore > 0) "%.2f".format(r.ratio) else "n/a"
                     ListItem(
                         headlineContent = { Text(r.name) },
                         supportingContent = {

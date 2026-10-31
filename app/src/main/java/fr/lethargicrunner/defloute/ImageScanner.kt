@@ -7,7 +7,8 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 
 /**
- * Resultat d'analyse d'une image.
+ * Resultat d'analyse d'une image. Seuils NON figes ici : la decision se prend
+ * dans l'UI avec les seuils courants (reglables en direct, sans re-scan).
  */
 data class ImageResult(
     val uri: Uri,
@@ -18,11 +19,11 @@ data class ImageResult(
     /** Score a l'echelle grossiere (max ~128 px). */
     val coarseScore: Double,
 ) {
-    /** Decision multi-echelle : floue si score fin faible OU ratio grossier/fin eleve (flou + bruit). */
-    val blurry: Boolean get() = BlurDetector.isBlurryMultiScale(fineScore, coarseScore)
+    /** Ratio grossier/fin, affiche et sert au 2e critere. */
+    val ratio: Double get() = if (fineScore > 0) coarseScore / fineScore else Double.POSITIVE_INFINITY
 
-    /** Score affiche : le score fin, conserve pour le tri et le debug. */
-    val score: Double get() = fineScore
+    fun isBlurry(fineThreshold: Double, ratioThreshold: Double): Boolean =
+        BlurDetector.isBlurryMultiScale(fineScore, coarseScore, fineThreshold, ratioThreshold)
 }
 
 /**
@@ -42,7 +43,6 @@ object ImageScanner {
         return ext in IMAGE_EXTENSIONS
     }
 
-    /** Parcours recursif du dossier et analyse de toutes les images. [onProgress] est appele apres chaque image. */
     suspend fun scan(context: Context, root: DocumentFile, onProgress: (analysed: Int, total: Int) -> Unit = { _, _ -> }): List<ImageResult> {
         val images = mutableListOf<DocumentFile>()
         collectImages(root, images)
@@ -52,7 +52,7 @@ object ImageScanner {
             analyse(context, file)?.let { results.add(it) }
             onProgress(index + 1, images.size)
         }
-        return results.sortedBy { it.fineScore } // les plus floues en premier
+        return results.sortedBy { it.fineScore }
     }
 
     private fun collectImages(folder: DocumentFile, out: MutableList<DocumentFile>) {
@@ -73,7 +73,6 @@ object ImageScanner {
     }
 
     private fun analyse(context: Context, file: DocumentFile): ImageResult? {
-        // 1) Bornes sans decodage complet
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         try {
             context.contentResolver.openInputStream(file.uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
@@ -81,7 +80,6 @@ object ImageScanner {
         }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
-        // 2) Decodage a l'echelle fine (une seule lecture du flux)
         val fineBitmap = try {
             val opts = BitmapFactory.Options().apply {
                 inSampleSize = sampleFor(bounds.outWidth, bounds.outHeight, FINE_DIM)
@@ -93,7 +91,6 @@ object ImageScanner {
             return null
         } ?: return null
 
-        // 3) Echelle grossiere derivee du bitmap fin (pas de relecture disque)
         val coarseBitmap = try {
             val scale = maxOf(fineBitmap.width, fineBitmap.height) / COARSE_DIM
             if (scale >= 2) {
@@ -110,7 +107,6 @@ object ImageScanner {
             null
         }
 
-        // 4) Scores + decision multi-echelle
         val fineScore = BlurDetector.score(fineBitmap)
         val coarseScore = coarseBitmap?.let { BlurDetector.score(it) } ?: 0.0
 

@@ -15,10 +15,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Etat du scan. Vit dans le ViewModel : SURVIT A LA ROTATION de l'ecran,
- * le scan continue pendant que l'interface est reconstruite.
- */
 data class ScanState(
     val treeUri: Uri? = null,
     val folderName: String? = null,
@@ -26,17 +22,26 @@ data class ScanState(
     val analysed: Int = 0,
     val total: Int = 0,
     val results: List<ImageResult> = emptyList(),
-    val error: String? = null
+    val error: String? = null,
+    /** Seuils reglables en direct, persistes entre les sessions. */
+    val fineThreshold: Double = BlurDetector.DEFAULT_BLUR_THRESHOLD,
+    val ratioThreshold: Double = BlurDetector.DEFAULT_RATIO_THRESHOLD
 )
 
 class ScanViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val _state = MutableStateFlow(ScanState())
+    private val prefs = app.getSharedPreferences("defloute_settings", Application.MODE_PRIVATE)
+
+    private val _state = MutableStateFlow(
+        ScanState(
+            fineThreshold = prefs.getFloat(KEY_FINE, BlurDetector.DEFAULT_BLUR_THRESHOLD.toFloat()).toDouble(),
+            ratioThreshold = prefs.getFloat(KEY_RATIO, BlurDetector.DEFAULT_RATIO_THRESHOLD.toFloat()).toDouble()
+        )
+    )
     val state: StateFlow<ScanState> = _state.asStateFlow()
 
     private var scanJob: Job? = null
 
-    /** Enregistre le dossier choisi (permission persistante pour ne pas la reperdre apres redemarrage). */
     fun setFolder(uri: Uri) {
         try {
             getApplication<Application>().contentResolver.takePersistableUriPermission(
@@ -46,10 +51,9 @@ class ScanViewModel(app: Application) : AndroidViewModel(app) {
         } catch (_: SecurityException) {
         }
         val name = DocumentFile.fromTreeUri(getApplication(), uri)?.name
-        _state.update { ScanState(treeUri = uri, folderName = name) }
+        _state.update { ScanState(treeUri = uri, folderName = name, fineThreshold = it.fineThreshold, ratioThreshold = it.ratioThreshold) }
     }
 
-    /** Lance le scan ; sans effet si deja en cours. L'ancien scan est annule si on change de dossier. */
     fun startScan() {
         val current = _state.value
         val root = current.treeUri?.let { DocumentFile.fromTreeUri(getApplication(), it) }
@@ -72,5 +76,22 @@ class ScanViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(scanning = false) }
             }
         }
+    }
+
+    /** Seuil absolu : pas de re-scan necessaire, la liste se re-trie en direct. */
+    fun setFineThreshold(value: Double) {
+        _state.update { it.copy(fineThreshold = value) }
+        prefs.edit().putFloat(KEY_FINE, value.toFloat()).apply()
+    }
+
+    /** Seuil ratio : idem. */
+    fun setRatioThreshold(value: Double) {
+        _state.update { it.copy(ratioThreshold = value) }
+        prefs.edit().putFloat(KEY_RATIO, value.toFloat()).apply()
+    }
+
+    companion object {
+        private const val KEY_FINE = "fine_threshold"
+        private const val KEY_RATIO = "ratio_threshold"
     }
 }
