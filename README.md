@@ -1,28 +1,20 @@
-# Defloute
+# Defloute — V2
 
-Application Android (Kotlin + Jetpack Compose) qui scanne un dossier d'images,
-detecte celles qui sont floues et leur attribue un score de nettete,
-en vue de les ameliorer ensuite.
+Détection des photos floues **et** défloutage, en pur Kotlin (zéro dépendance externe).
 
-## Principes
-- **Lecture seule stricte** : aucune image n'est modifiee.
-- **Zero dependance externe** : detection du flou par variance du Laplacien,
-  implantee en pur Kotlin sur les pixels du Bitmap.
-- **Acces dossier via SAF** (OPEN_DOCUMENT_TREE) : pas de permission de stockage globale.
-- Decodage echantillonne (max 512 px) pour maitriser la memoire : le score de nettete
-  n'a pas besoin de la pleine resolution.
+## V2 (0.3.0) — Défloutage
+- Onglet **Déflouter** : choisir une image (SAF), traitement, comparaison avant/après (chips), score de netteté avant → après.
+- Pipeline (`DeblurProcessor.kt`) :
+  1. Upscale bilinéaire x2 (désactivable) ;
+  2. Unsharp mask multi-échelle (rayons 1 / 3 / 6 px, montants proportionnels à la force) ;
+  3. Clamp doux au-delà de ±40 de détail pour éviter les halos.
+- Slider de force 0–100 %, recalcul immédiat.
+- Sauvegarde via SAF dans un dossier choisi, nom `…-defloute-<horodatage>.jpg` (qualité 95).
+- Traitement hors UI thread (`Dispatchers.Default`), survit à la rotation (ViewModel).
 
-## Score
-Le score est la variance de la reponse du noyau Laplacien 4-connexe sur les luminances.
-Image nette -> forte variance. Image floue -> faible variance.
-Seuil par defaut : 100 (ajustable dans BlurDetector.kt).
+## V1 conservée
+- Onglet **Scanner** : scan récursif SAF, variance du Laplacien multi-échelle, seuils réglables (persistés `defloute_settings`), liste triée floues d'abord.
 
-## Roadmap
-- V0.1 : scan dossier + scores + liste triee (plus floues d'abord)  *(en cours)*
-- V0.2 : export CSV, reglage du seuil, miniatures
-- V0.3 : filtrage par niveau de flou, groupes
-- V1.0 : amelioration de la qualite des images floues (etape de traitement)
-
-## Build
-CI GitHub : tests unitaires puis assembleDebug a chaque push (artefact Defloute-APK).
-Le wrapper Gradle n'est pas commité ; il est genere en CI (Gradle 8.7, AGP 8.4, Kotlin 2.0, minSdk 26).
+## Conventions
+- Kotlin 2.0 + Compose + Material 3, AGP 8.4, minSdk 26, Gradle 8.7 (wrapper non commité, généré en CI).
+- CI « Build APK » : tests unitaires puis assembleDebug, APK renommé `Defloute-v<version>.apk`, icône adaptative vectorielle.
