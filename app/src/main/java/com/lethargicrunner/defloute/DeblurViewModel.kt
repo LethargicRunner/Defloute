@@ -36,13 +36,19 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         val showAfter: Boolean = true,
         /** Progression 0..1 du traitement IA, et texte de l'étape en cours. */
         val progress: Float = 0f,
-        val stage: String = ""
+        val stage: String = "",
+        /** Vrai quand le traitement IA est suspendu (bouton Pause). */
+        val paused: Boolean = false
     )
 
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state
 
     private var job: Job? = null
+
+    /** Demande de pause (bouton) : consultée entre deux tuiles IA. */
+    @Volatile
+    private var pauseRequested = false
 
     // Image prétraitée (bruit + tons) réutilisée quand seul le curseur de force change.
     private var preparedKey: String? = null
@@ -54,6 +60,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
     fun setMode(m: Mode) {
         if (_state.value.mode == m) return
         job?.cancel()
+        pauseRequested = false
         update { it.copy(mode = m, processing = false, error = null, result = null, progress = 0f, stage = "") }
         if (m == Mode.CLASSIC && _state.value.source != null) process()
     }
@@ -84,11 +91,41 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cancel() {
         job?.cancel()
-        update { it.copy(processing = false, progress = 0f, stage = "") }
+        pauseRequested = false
+        update { it.copy(processing = false, paused = false, progress = 0f, stage = "") }
+    }
+
+    /** Suspend le traitement IA entre deux tuiles (rien n'est perdu). */
+    fun pause() {
+        pauseRequested = true
+        update { it.copy(paused = true, stage = (if (it.stage.isEmpty()) "IA" else it.stage) + " — en pause") }
+    }
+
+    /** Reprend le traitement IA là où il s'était arrêté. */
+    fun resume() {
+        pauseRequested = false
+        update { it.copy(paused = false, stage = it.stage.removeSuffix(" — en pause")) }
+    }
+
+    /**
+     * Règle la force automatiquement selon le flou détecté dans l'image source :
+     * plus l'image est floue, plus la force est élevée.
+     */
+    fun autoStrength() {
+        val src = _state.value.source ?: return
+        val score = scoreOf(src)
+        val v = when {
+            score < 20.0 -> 0.85f
+            score < 60.0 -> 0.65f
+            score < 150.0 -> 0.5f
+            else -> 0.35f
+        }
+        setStrength(v)
     }
 
     fun load(uri: Uri) {
         job?.cancel()
+        pauseRequested = false
         job = viewModelScope.launch {
             update { it.copy(processing = true, error = null, stage = "Chargement…") }
             try {
@@ -186,7 +223,11 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                                 )
                             }
                         },
-                        checkCancelled = { ensureActive() }
+                        checkCancelled = {
+                            // Pause : on attend sans consommer de CPU tant que l'utilisateur a suspendu.
+                            while (pauseRequested) delay(200)
+                            ensureActive()
+                        }
                     )
                     if (work !== src) work.recycle()
 
@@ -205,9 +246,11 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OutOfMemoryError) {
-                update { it.copy(processing = false, progress = 0f, stage = "", error = MEMORY_ERROR) }
+                pauseRequested = false
+                update { it.copy(processing = false, paused = false, progress = 0f, stage = "", error = MEMORY_ERROR) }
             } catch (e: Throwable) {
-                update { it.copy(processing = false, progress = 0f, stage = "", error = "Erreur IA : " + (e.message ?: e.javaClass.simpleName)) }
+                pauseRequested = false
+                update { it.copy(processing = false, paused = false, progress = 0f, stage = "", error = "Erreur IA : " + (e.message ?: e.javaClass.simpleName)) }
             }
         }
     }
@@ -243,3 +286,4 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             "Image trop grande pour la mémoire : désactive l'upscale x2 ou choisis une image plus petite"
     }
 }
+

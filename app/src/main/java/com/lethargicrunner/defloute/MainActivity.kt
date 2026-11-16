@@ -11,6 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.drag
@@ -24,12 +25,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -139,23 +142,27 @@ fun HelpDialog(onClose: () -> Unit) {
                     "1. Appuie sur « Choisir une image ».\n" +
                         "2. Choisis un mode :\n" +
                         "• Classique : rapide (quelques secondes), le résultat se met à jour quand tu bouges les réglages.\n" +
-                        "• IA Real-ESRGAN : plus lent (1 à 5 minutes) mais bien plus détaillé. Appuie sur « Lancer l'amélioration IA » ; tu peux annuler à tout moment.\n" +
-                        "3. Compare avec « Avant » / « Après ».\n" +
+                        "• IA Real-ESRGAN : plus lent (1 à 5 minutes) mais bien plus détaillé. Appuie sur « Lancer l'amélioration IA » ; tu peux mettre en pause, reprendre ou annuler à tout moment.\n" +
+                        "3. Compare : le curseur au milieu de l'image montre l'AVANT à gauche et l'APRÈS à droite, glisse-le où tu veux.\n" +
                         "4. Appuie sur « Enregistrer dans un dossier » : la photo améliorée est ajoutée (jamais d'écrasement de l'original)."
                 )
                 HelpSection(
                     "Zoom et loupe",
-                    "• Sous l'image, le curseur « Zoom » agrandit la vue (ou pince avec deux doigts).\n" +
+                    "• En vue « Avant » ou « Après », le curseur « Zoom » agrandit la vue (ou pince avec deux doigts).\n" +
                         "• En mode zoom, glisse un doigt pour te déplacer dans l'image, double-tape pour revenir à 100 %.\n" +
                         "• Active « Loupe » : glisse ton doigt sur l'image, une loupe circulaire agrandit la zone sous le doigt (pratique pour juger la netteté des détails)."
                 )
                 HelpSection(
                     "Les réglages",
-                    "• Force : intensité de la netteté (mode Classique). Au-delà de 70 %, des halos peuvent apparaître.\n" +
+                    "• Force : intensité de la netteté (mode Classique). Le bouton « Auto » la règle selon le flou détecté. Au-delà de 70 %, des halos peuvent apparaître.\n" +
                         "• Upscale x2 : double la taille de l'image avant le traitement (mode Classique).\n" +
                         "• Réduire le bruit : adoucit le grain sans effacer les contours. Garde-le activé pour les photos sombres ou prises de nuit.\n" +
                         "• Corriger lumière et contraste : étire les contrastes, éclaircit les ombres et tasse un peu les zones très claires.\n" +
                         "• Netteté : le score avant → après. Plus il est élevé, plus l'image est nette."
+                )
+                HelpSection(
+                    "Pause et reprise (mode IA)",
+                    "Pendant le traitement IA, « Pause » suspend le travail entre deux tuiles (rien n'est perdu), « Reprendre » continue, et « Annuler » arrête définitivement. Pratique quand le téléphone chauffe ou que la batterie baisse."
                 )
                 HelpSection(
                     "Onglet « Scanner »",
@@ -183,6 +190,79 @@ private fun HelpSection(title: String, body: String) {
     Spacer(Modifier.height(4.dp))
     Text(body, style = MaterialTheme.typography.bodyMedium)
     Spacer(Modifier.height(14.dp))
+}
+
+// ------------------------------------------------------------------ Comparateur avant/après à curseur
+
+/**
+ * L'AVANT est affiché à gauche du curseur, l'APRÈS à droite. Glisse la poignée
+ * (ou tape ailleurs sur l'image) pour déplacer la frontière.
+ */
+@Composable
+fun CompareSlider(before: Bitmap, after: Bitmap, modifier: Modifier = Modifier) {
+    var split by remember { mutableFloatStateOf(0.5f) }
+
+    Box(modifier) {
+        Image(
+            bitmap = after.asImageBitmap(),
+            contentDescription = "Après",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize()
+        )
+        Image(
+            bitmap = before.asImageBitmap(),
+            contentDescription = "Avant",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .drawWithContent {
+                    clipRect(right = size.width * split) { this@drawWithContent.drawContent() }
+                }
+        )
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures { change, _ ->
+                        change.consume()
+                        split = (change.position.x / size.width).coerceIn(0.02f, 0.98f)
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures { pos ->
+                        split = (pos.x / size.width).coerceIn(0.02f, 0.98f)
+                    }
+                }
+        ) {
+            val x = size.width * split
+            drawLine(Color.White, Offset(x, 0f), Offset(x, size.height), strokeWidth = 4f)
+            drawCircle(Color.White, radius = 22f, center = Offset(x, size.height / 2f))
+            drawCircle(DeflouteColors.Teal, radius = 17f, center = Offset(x, size.height / 2f))
+            // flèches de la poignée
+            drawLine(Color.White, Offset(x - 8f, size.height / 2f), Offset(x - 3f, size.height / 2f), strokeWidth = 3f)
+            drawLine(Color.White, Offset(x + 3f, size.height / 2f), Offset(x + 8f, size.height / 2f), strokeWidth = 3f)
+        }
+        Text(
+            "AVANT",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(8.dp)
+                .background(Color(0x99000000), RoundedCornerShape(6.dp))
+                .padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+        Text(
+            "APRÈS",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp)
+                .background(Color(0x99000000), RoundedCornerShape(6.dp))
+                .padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
 }
 
 // ------------------------------------------------------------------ Zoom + loupe
@@ -336,6 +416,8 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
     val isAi = s.mode == DeblurViewModel.Mode.AI
     var zoom by remember { mutableFloatStateOf(1f) }
     var loupe by remember { mutableStateOf(false) }
+    // 0 = comparateur à curseur, 1 = avant, 2 = après
+    var viewMode by remember { mutableIntStateOf(0) }
 
     Column(
         Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
@@ -367,57 +449,87 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
 
         Spacer(Modifier.height(12.dp))
 
-        val shown = if (s.showAfter) (s.result ?: s.source) else s.source
-        shown?.let { bmp ->
+        val sourceBmp = s.source
+        val resultBmp = s.result
+        if (sourceBmp != null) {
+            val canCompare = resultBmp != null && !s.processing
+            val showCompare = viewMode == 0 && canCompare
+
             Surface(
                 shape = MaterialTheme.shapes.large,
                 tonalElevation = 2.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                ZoomableImage(
-                    bitmap = bmp,
-                    contentDescription = if (s.showAfter) "Après" else "Avant",
-                    zoom = zoom,
-                    onZoomChange = { zoom = it },
-                    loupeEnabled = loupe,
-                    modifier = Modifier.fillMaxWidth().height(380.dp).background(Color(0xFF0A0D0F))
-                )
+                if (showCompare) {
+                    CompareSlider(
+                        before = sourceBmp,
+                        after = resultBmp,
+                        modifier = Modifier.fillMaxWidth().height(380.dp).background(Color(0xFF0A0D0F))
+                    )
+                } else {
+                    val bmp = if (viewMode == 2 && resultBmp != null) resultBmp else sourceBmp
+                    ZoomableImage(
+                        bitmap = bmp,
+                        contentDescription = if (viewMode == 2) "Après" else "Avant",
+                        zoom = zoom,
+                        onZoomChange = { zoom = it },
+                        loupeEnabled = loupe,
+                        modifier = Modifier.fillMaxWidth().height(380.dp).background(Color(0xFF0A0D0F))
+                    )
+                }
             }
             Spacer(Modifier.height(8.dp))
 
-            // Avant / Après + loupe
+            // Sélecteur de vue + loupe
             Row(verticalAlignment = Alignment.CenterVertically) {
-                FilterChip(selected = !s.showAfter, onClick = { vm.toggleCompare() }, label = { Text("Avant") })
-                Spacer(Modifier.width(8.dp))
-                FilterChip(selected = s.showAfter, onClick = { vm.toggleCompare() }, label = { Text("Après") })
-                Spacer(Modifier.width(12.dp))
+                FilterChip(
+                    selected = viewMode == 0,
+                    enabled = canCompare,
+                    onClick = { viewMode = 0 },
+                    label = { Text("Comparer") }
+                )
+                Spacer(Modifier.width(6.dp))
+                FilterChip(selected = viewMode == 1, onClick = { viewMode = 1 }, label = { Text("Avant") })
+                Spacer(Modifier.width(6.dp))
+                FilterChip(
+                    selected = viewMode == 2,
+                    enabled = resultBmp != null,
+                    onClick = { viewMode = 2 },
+                    label = { Text("Après") }
+                )
+                Spacer(Modifier.width(6.dp))
                 FilterChip(
                     selected = loupe,
-                    onClick = { loupe = !loupe; if (loupe) zoom = 1f },
+                    onClick = { loupe = !loupe; if (loupe) { zoom = 1f; if (viewMode == 0) viewMode = 1 } },
                     label = { Text(if (loupe) "Loupe ON" else "Loupe") }
                 )
             }
-            Spacer(Modifier.height(6.dp))
-            if (!loupe) {
+
+            if (!showCompare && !loupe) {
+                Spacer(Modifier.height(6.dp))
                 Text("Zoom : ${(zoom * 100).toInt()} %", style = MaterialTheme.typography.bodySmall)
-                Slider(
-                    value = zoom,
-                    onValueChange = { zoom = it },
-                    valueRange = 1f..8f
-                )
+                Slider(value = zoom, onValueChange = { zoom = it }, valueRange = 1f..8f)
                 Text(
                     "Astuce : pince aussi l'image à deux doigts, double-tape pour revenir à 100 %.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            } else if (showCompare) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Glisse le curseur sur l'image : AVANT à gauche, APRÈS à droite.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             } else {
+                Spacer(Modifier.height(6.dp))
                 Text(
                     "Glisse le doigt sur l'image : la loupe agrandit la zone sous le doigt.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (s.result != null) {
+            if (resultBmp != null) {
                 Spacer(Modifier.height(4.dp))
                 Text("Netteté : ${s.scoreBefore} → ${s.scoreAfter}", style = MaterialTheme.typography.bodySmall)
             }
@@ -432,7 +544,13 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
 
             if (!isAi) {
                 Spacer(Modifier.height(8.dp))
-                Text("Force : ${(s.strength * 100).toInt()} %", style = MaterialTheme.typography.bodySmall)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("Force : ${(s.strength * 100).toInt()} %", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.weight(1f))
+                    OutlinedButton(onClick = { vm.autoStrength() }, enabled = s.source != null && !s.processing) {
+                        Text("Auto")
+                    }
+                }
                 Slider(value = s.strength, onValueChange = { vm.setStrength(it) }, valueRange = 0f..1f)
                 SwitchRow("Upscale x2", s.upscale, enabled = !s.processing) { vm.toggleUpscale() }
             } else {
@@ -459,7 +577,13 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
             if (s.stage.isNotEmpty()) Text(s.stage, style = MaterialTheme.typography.bodySmall)
             if (isAi) {
                 Spacer(Modifier.height(4.dp))
-                OutlinedButton(onClick = { vm.cancel() }) { Text("Annuler") }
+                Row {
+                    Button(onClick = { if (s.paused) vm.resume() else vm.pause() }) {
+                        Text(if (s.paused) "Reprendre" else "Pause")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = { vm.cancel() }) { Text("Annuler") }
+                }
             }
         }
 
