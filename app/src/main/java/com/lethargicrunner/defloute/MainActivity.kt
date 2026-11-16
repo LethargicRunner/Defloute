@@ -1,32 +1,55 @@
 package com.lethargicrunner.defloute
 
+import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.min
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            DeflouteTheme {
                 var tab by remember { mutableIntStateOf(0) }
                 var showHelp by remember { mutableStateOf(false) }
                 Scaffold(
@@ -48,16 +71,52 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// ------------------------------------------------------------------ Thème (teal, comme l'icône)
+
+object DeflouteColors {
+    val Teal = Color(0xFF00897B)
+    val TealDark = Color(0xFF00695C)
+    val TealLight = Color(0xFF4DB6AC)
+    val Amber = Color(0xFFFFC107)
+    val Surface = Color(0xFF101417)
+    val SurfaceCard = Color(0xFF1A2126)
+}
+
+@Composable
+fun DeflouteTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            primary = DeflouteColors.Teal,
+            onPrimary = Color.White,
+            primaryContainer = DeflouteColors.TealDark,
+            onPrimaryContainer = Color.White,
+            secondary = DeflouteColors.TealLight,
+            tertiary = DeflouteColors.Amber,
+            background = DeflouteColors.Surface,
+            surface = DeflouteColors.Surface,
+            surfaceVariant = DeflouteColors.SurfaceCard,
+            surfaceContainer = DeflouteColors.SurfaceCard,
+            surfaceContainerHigh = DeflouteColors.SurfaceCard
+        ),
+        shapes = Shapes(
+            medium = RoundedCornerShape(14.dp),
+            large = RoundedCornerShape(18.dp)
+        ),
+        content = content
+    )
+}
+
 // ------------------------------------------------------------------ Barre du haut + mode d'emploi
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppTopBar(onHelp: () -> Unit) {
     TopAppBar(
-        title = { Text("Défloute") },
+        title = { Text("Défloute", fontWeight = FontWeight.Bold) },
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = DeflouteColors.TealDark, titleContentColor = Color.White),
         actions = {
             IconButton(onClick = onHelp) {
-                Text("?", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("?", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color.White)
             }
         }
     )
@@ -81,8 +140,14 @@ fun HelpDialog(onClose: () -> Unit) {
                         "2. Choisis un mode :\n" +
                         "• Classique : rapide (quelques secondes), le résultat se met à jour quand tu bouges les réglages.\n" +
                         "• IA Real-ESRGAN : plus lent (1 à 5 minutes) mais bien plus détaillé. Appuie sur « Lancer l'amélioration IA » ; tu peux annuler à tout moment.\n" +
-                        "3. Compare avec les boutons « Avant » / « Après ».\n" +
+                        "3. Compare avec « Avant » / « Après ».\n" +
                         "4. Appuie sur « Enregistrer dans un dossier » : la photo améliorée est ajoutée (jamais d'écrasement de l'original)."
+                )
+                HelpSection(
+                    "Zoom et loupe",
+                    "• Sous l'image, le curseur « Zoom » agrandit la vue (ou pince avec deux doigts).\n" +
+                        "• En mode zoom, glisse un doigt pour te déplacer dans l'image, double-tape pour revenir à 100 %.\n" +
+                        "• Active « Loupe » : glisse ton doigt sur l'image, une loupe circulaire agrandit la zone sous le doigt (pratique pour juger la netteté des détails)."
                 )
                 HelpSection(
                     "Les réglages",
@@ -114,10 +179,141 @@ fun HelpDialog(onClose: () -> Unit) {
 
 @Composable
 private fun HelpSection(title: String, body: String) {
-    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
     Spacer(Modifier.height(4.dp))
     Text(body, style = MaterialTheme.typography.bodyMedium)
     Spacer(Modifier.height(14.dp))
+}
+
+// ------------------------------------------------------------------ Zoom + loupe
+
+/**
+ * Image zoomable : pincement à deux doigts ou curseur de zoom, glissement pour se déplacer,
+ * double-tap pour revenir à 100 %. Mode loupe : une loupe circulaire suit le doigt.
+ */
+@Composable
+fun ZoomableImage(
+    bitmap: Bitmap,
+    modifier: Modifier = Modifier,
+    contentDescription: String? = null,
+    zoom: Float,
+    onZoomChange: (Float) -> Unit,
+    loupeEnabled: Boolean
+) {
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    var loupePos by remember { mutableStateOf<Offset?>(null) }
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
+    val image = remember(bitmap) { bitmap.asImageBitmap() }
+    val density = LocalDensity.current
+    val loupeRadiusPx = with(density) { 72.dp.toPx() }
+    val loupeZoom = 3f
+
+    Box(modifier) {
+        Image(
+            bitmap = image,
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { viewSize = it }
+                .clip(RectangleShape)
+                .then(
+                    if (loupeEnabled) Modifier.pointerInput(image) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown()
+                            loupePos = down.position
+                            drag(down.id) { loupePos = it.position }
+                            loupePos = null
+                        }
+                    } else Modifier.pointerInput(image) {
+                        detectTransformGestures { _, pan, gestureZoom, _ ->
+                            onZoomChange((zoom * gestureZoom).coerceIn(1f, 8f))
+                            if (zoom > 1f || gestureZoom > 1f) offset += pan
+                        }
+                    }
+                )
+                .graphicsLayer {
+                    scaleX = zoom; scaleY = zoom
+                    translationX = offset.x; translationY = offset.y
+                }
+                .pointerInput(image) {
+                    detectTapGestures(onDoubleTap = {
+                        onZoomChange(1f)
+                        offset = Offset.Zero
+                    })
+                }
+        )
+
+        // Loupe circulaire au-dessus de l'image
+        loupePos?.let { pos ->
+            Canvas(Modifier.fillMaxSize()) {
+                val bw = bitmap.width.toFloat()
+                val bh = bitmap.height.toFloat()
+                if (viewSize.width == 0 || viewSize.height == 0) return@Canvas
+                // Rect affiché par ContentScale.Fit
+                val k = min(viewSize.width / bw, viewSize.height / bh)
+                val dw = bw * k
+                val dh = bh * k
+                val ox = (viewSize.width - dw) / 2f + offset.x
+                val oy = (viewSize.height - dh) / 2f + offset.y
+                // Point sous le doigt, en coordonnées bitmap (zoom appliqué)
+                val bx = (pos.x - ox) / (k * zoom)
+                val by = (pos.y - oy) / (k * zoom)
+                // Fenêtre source : rayon loupe / zoom loupe, en pixels bitmap
+                val srcHalf = loupeRadiusPx / (loupeZoom * k * zoom)
+                val sx = (bx - srcHalf).toInt().coerceIn(0, (bw - 2 * srcHalf).toInt().coerceAtLeast(0))
+                val sy = (by - srcHalf).toInt().coerceIn(0, (bh - 2 * srcHalf).toInt().coerceAtLeast(0))
+                val sSize = (2 * srcHalf).toInt().coerceAtLeast(1)
+                val cx = pos.x - loupeRadiusPx
+                val cy = pos.y - loupeRadiusPx
+                val d = loupeRadiusPx * 2f
+                drawCircle(color = Color.White, radius = loupeRadiusPx + 3f, center = Offset(pos.x, pos.y))
+                clipCircle(Offset(pos.x, pos.y), loupeRadiusPx) {
+                    drawImage(
+                        image = image,
+                        srcOffset = IntOffset(sx, sy),
+                        srcSize = IntSize(sSize, sSize),
+                        dstOffset = IntOffset(cx.toInt(), cy.toInt()),
+                        dstSize = IntSize(d.toInt(), d.toInt())
+                    )
+                }
+                drawCircle(
+                    color = DeflouteColors.TealLight,
+                    radius = loupeRadiusPx,
+                    center = Offset(pos.x, pos.y),
+                    style = Stroke(width = 4f)
+                )
+            }
+        }
+
+        // Indicateur de zoom + bouton reset
+        if (zoom > 1.01f && !loupeEnabled) {
+            Row(
+                Modifier.align(Alignment.BottomEnd).padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("${(zoom * 100).toInt()} %", style = MaterialTheme.typography.labelSmall,
+                    color = Color.White, modifier = Modifier
+                        .background(Color(0x99000000), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp))
+                Spacer(Modifier.width(6.dp))
+                SmallFloatingActionButton(onClick = { onZoomChange(1f); offset = Offset.Zero }) {
+                    Text("⟲", color = Color.White)
+                }
+            }
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.clipCircle(
+    center: Offset,
+    radius: Float,
+    block: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit
+) {
+    val path = androidx.compose.ui.graphics.Path().apply {
+        addOval(androidx.compose.ui.geometry.Rect(center.x - radius, center.y - radius, center.x + radius, center.y + radius))
+    }
+    clipPath(path) { block() }
 }
 
 // ------------------------------------------------------------------ Déflouter
@@ -138,27 +334,28 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
         }
     }
     val isAi = s.mode == DeblurViewModel.Mode.AI
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var loupe by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // --- choix du mode
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            FilterChip(
+        // --- choix du mode (segmented)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            SegmentedButton(
                 selected = !isAi, enabled = !s.processing,
                 onClick = { vm.setMode(DeblurViewModel.Mode.CLASSIC) },
-                label = { Text("Classique") }
-            )
-            Spacer(Modifier.width(8.dp))
-            FilterChip(
+                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
+            ) { Text("Classique") }
+            SegmentedButton(
                 selected = isAi, enabled = !s.processing,
                 onClick = { vm.setMode(DeblurViewModel.Mode.AI) },
-                label = { Text("IA Real-ESRGAN") }
-            )
+                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
+            ) { Text("IA Real-ESRGAN") }
         }
-        Spacer(Modifier.height(12.dp))
 
+        Spacer(Modifier.height(12.dp))
         Button(onClick = { pickImage.launch(arrayOf("image/*")) }, enabled = !s.processing) {
             Text("Choisir une image")
         }
@@ -172,44 +369,82 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
 
         val shown = if (s.showAfter) (s.result ?: s.source) else s.source
         shown?.let { bmp ->
-            Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = if (s.showAfter) "Après" else "Avant",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp)
-            )
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                tonalElevation = 2.dp,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                ZoomableImage(
+                    bitmap = bmp,
+                    contentDescription = if (s.showAfter) "Après" else "Avant",
+                    zoom = zoom,
+                    onZoomChange = { zoom = it },
+                    loupeEnabled = loupe,
+                    modifier = Modifier.fillMaxWidth().height(380.dp).background(Color(0xFF0A0D0F))
+                )
+            }
             Spacer(Modifier.height(8.dp))
+
+            // Avant / Après + loupe
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FilterChip(selected = !s.showAfter, onClick = { vm.toggleCompare() }, label = { Text("Avant") })
                 Spacer(Modifier.width(8.dp))
                 FilterChip(selected = s.showAfter, onClick = { vm.toggleCompare() }, label = { Text("Après") })
-                Spacer(Modifier.width(16.dp))
-                if (s.result != null) {
-                    Text("Netteté : ${s.scoreBefore} → ${s.scoreAfter}", style = MaterialTheme.typography.bodySmall)
-                }
+                Spacer(Modifier.width(12.dp))
+                FilterChip(
+                    selected = loupe,
+                    onClick = { loupe = !loupe; if (loupe) zoom = 1f },
+                    label = { Text(if (loupe) "Loupe ON" else "Loupe") }
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            if (!loupe) {
+                Text("Zoom : ${(zoom * 100).toInt()} %", style = MaterialTheme.typography.bodySmall)
+                Slider(
+                    value = zoom,
+                    onValueChange = { zoom = it },
+                    valueRange = 1f..8f
+                )
+                Text(
+                    "Astuce : pince aussi l'image à deux doigts, double-tape pour revenir à 100 %.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    "Glisse le doigt sur l'image : la loupe agrandit la zone sous le doigt.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (s.result != null) {
+                Spacer(Modifier.height(4.dp))
+                Text("Netteté : ${s.scoreBefore} → ${s.scoreAfter}", style = MaterialTheme.typography.bodySmall)
             }
         }
 
         Spacer(Modifier.height(12.dp))
 
-        // --- réglages communs
-        SwitchRow("Réduire le bruit", s.denoise, enabled = !s.processing) { vm.toggleDenoise() }
-        SwitchRow("Corriger lumière et contraste", s.tone, enabled = !s.processing) { vm.toggleTone() }
+        // --- réglages
+        SettingsCard {
+            SwitchRow("Réduire le bruit", s.denoise, enabled = !s.processing) { vm.toggleDenoise() }
+            SwitchRow("Corriger lumière et contraste", s.tone, enabled = !s.processing) { vm.toggleTone() }
 
-        if (!isAi) {
-            Spacer(Modifier.height(8.dp))
-            Text("Force : ${(s.strength * 100).toInt()} %", style = MaterialTheme.typography.bodySmall)
-            Slider(value = s.strength, onValueChange = { vm.setStrength(it) }, valueRange = 0f..1f)
-            SwitchRow("Upscale x2", s.upscale, enabled = !s.processing) { vm.toggleUpscale() }
-        } else {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "L'IA agrandit l'image 4 fois (1024 px max en entrée) et dessine les détails manquants. Compte 1 à 5 minutes selon le téléphone.",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = { vm.processAi() }, enabled = s.source != null && !s.processing) {
-                Text("Lancer l'amélioration IA")
+            if (!isAi) {
+                Spacer(Modifier.height(8.dp))
+                Text("Force : ${(s.strength * 100).toInt()} %", style = MaterialTheme.typography.bodySmall)
+                Slider(value = s.strength, onValueChange = { vm.setStrength(it) }, valueRange = 0f..1f)
+                SwitchRow("Upscale x2", s.upscale, enabled = !s.processing) { vm.toggleUpscale() }
+            } else {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "L'IA agrandit l'image 4 fois (1024 px max en entrée) et dessine les détails manquants. Compte 1 à 5 minutes selon le téléphone.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = { vm.processAi() }, enabled = s.source != null && !s.processing) {
+                    Text("Lancer l'amélioration IA")
+                }
             }
         }
 
@@ -236,6 +471,17 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
 }
 
 @Composable
+private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        tonalElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(14.dp), content = content)
+    }
+}
+
+@Composable
 private fun SwitchRow(label: String, checked: Boolean, enabled: Boolean = true, onToggle: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Switch(checked = checked, onCheckedChange = { onToggle() }, enabled = enabled)
@@ -254,8 +500,6 @@ fun ScanScreen(vm: ScanViewModel = viewModel()) {
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
-        Text("Scanner un dossier", style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(12.dp))
         Button(onClick = { pickFolder.launch(null) }, enabled = !s.scanning) {
             Text(if (s.scanning) "Scan en cours…" else "Choisir un dossier")
         }
@@ -266,10 +510,14 @@ fun ScanScreen(vm: ScanViewModel = viewModel()) {
         }
 
         Spacer(Modifier.height(12.dp))
-        Text("Seuil score : ${s.settings.threshold.toInt()}", style = MaterialTheme.typography.bodySmall)
-        Slider(value = s.settings.threshold.toFloat(), onValueChange = { vm.setThreshold(it) }, valueRange = 0f..500f)
-        Text("Seuil ratio : ${"%.2f".format(s.settings.ratioThreshold)}", style = MaterialTheme.typography.bodySmall)
-        Slider(value = s.settings.ratioThreshold, onValueChange = { vm.setRatio(it) }, valueRange = 0f..1.5f)
+        SettingsCard {
+            Text("Sévérité de la détection", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(6.dp))
+            Text("Seuil score : ${s.settings.threshold.toInt()}", style = MaterialTheme.typography.bodySmall)
+            Slider(value = s.settings.threshold.toFloat(), onValueChange = { vm.setThreshold(it) }, valueRange = 0f..500f)
+            Text("Seuil ratio : ${"%.2f".format(s.settings.ratioThreshold)}", style = MaterialTheme.typography.bodySmall)
+            Slider(value = s.settings.ratioThreshold, onValueChange = { vm.setRatio(it) }, valueRange = 0f..1.5f)
+        }
 
         Spacer(Modifier.height(12.dp))
         val sorted = s.items.sortedWith(
@@ -277,14 +525,25 @@ fun ScanScreen(vm: ScanViewModel = viewModel()) {
         )
         sorted.forEach { item ->
             val blurry = item.isBlurry(s.settings)
-            Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                Column(Modifier.padding(10.dp)) {
-                    Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
-                    Text(
-                        "${if (blurry) "FLOUE" else "NETTE"} · score ${BlurDetector.displayScore(item.fineScore)} · ratio ${"%.2f".format(item.ratio)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (blurry) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+            Card(
+                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.size(10.dp).clip(CircleShape).background(
+                            if (blurry) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
                     )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                        Text(
+                            "${if (blurry) "FLOUE" else "NETTE"} · score ${BlurDetector.displayScore(item.fineScore)} · ratio ${"%.2f".format(item.ratio)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (blurry) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
         }
