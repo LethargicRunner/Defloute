@@ -5,7 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
-import android.util.ExifInterface
+import android.media.ExifInterface
 import java.io.InputStream
 
 /** Décodage d'image avec EXIF + échantillonnage mémoire maîtrisé. */
