@@ -12,8 +12,14 @@ android {
         applicationId = "com.lethargicrunner.defloute"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
+
+        // ONNX Runtime embarque des bibliothèques natives par architecture : on ne garde que les
+        // téléphones modernes (arm64) pour garder l'APK léger.
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -31,6 +37,10 @@ android {
     buildFeatures {
         compose = true
     }
+    androidResources {
+        // Le modèle IA (.onnx) est lu tel quel : inutile de le compresser.
+        noCompress += "onnx"
+    }
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
@@ -46,6 +56,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
 
     testImplementation("junit:junit:4.13.2")
 }
