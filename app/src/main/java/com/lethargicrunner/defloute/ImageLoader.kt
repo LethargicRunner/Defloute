@@ -20,9 +20,10 @@ object ImageLoader {
         boundsStream.use { BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
+        // Le plus grand côté décodé ne dépasse jamais maxDim (évite les OutOfMemory).
         var sample = 1
-        var dim = maxOf(bounds.outWidth, bounds.outHeight)
-        while (dim / 2 >= maxDim) { sample *= 2; dim /= 2 }
+        val longest = maxOf(bounds.outWidth, bounds.outHeight)
+        while (longest / sample > maxDim) sample *= 2
 
         val opts = BitmapFactory.Options().apply { inSampleSize = sample }
         val raw = context.contentResolver.openInputStream(uri)?.use {

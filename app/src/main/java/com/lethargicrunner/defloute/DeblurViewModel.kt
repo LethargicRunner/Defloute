@@ -48,7 +48,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = _state.value.copy(processing = true, error = null)
             try {
                 val bmp = withContext(Dispatchers.IO) {
-                    ImageLoader.decode(getApplication(), uri, maxDim = 2048)?.bitmap
+                    ImageLoader.decode(getApplication(), uri, maxDim = 1536)?.bitmap
                 } ?: throw IllegalArgumentException("Image illisible")
                 _state.value = _state.value.copy(source = bmp, result = null)
                 process()
@@ -78,6 +78,8 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                     scoreBefore = BlurDetector.displayScore(res.second),
                     scoreAfter = BlurDetector.displayScore(res.third)
                 )
+            } catch (e: OutOfMemoryError) {
+                _state.value = _state.value.copy(processing = false, error = "Image trop grande pour la mémoire : désactive l'upscale x2 ou choisis une image plus petite")
             } catch (e: Exception) {
                 _state.value = _state.value.copy(processing = false, error = e.message ?: "Erreur de traitement")
             }

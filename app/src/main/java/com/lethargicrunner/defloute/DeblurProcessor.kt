@@ -43,7 +43,7 @@ object DeblurProcessor {
         var current = upPx
         for (i in radii.indices) {
             val blurred = boxBlur3(current, upW, upH, radii[i])
-            current = unsharp(current, blurred, amounts[i])
+            unsharpInPlace(current, blurred, amounts[i]) // pas de nouveau tableau : économise la mémoire
         }
 
         return Processed(current, upW, upH)
@@ -104,11 +104,12 @@ object DeblurProcessor {
      */
     fun boxBlur3(src: IntArray, w: Int, h: Int, radius: Int): IntArray {
         val r = radius.coerceAtLeast(1)
-        var tmp = IntArray(src.size)
-        var cur = src.copyOf()
+        val tmp = IntArray(src.size)
+        val cur = src.copyOf()
+        // Deux tableaux seulement, réutilisés à chaque passe (avant : 1 copie de plus par passe).
         repeat(3) {
-            tmp = boxBlurPass(cur, tmp, w, h, r, horizontal = true)
-            cur = boxBlurPass(tmp, cur.copyOf(), w, h, r, horizontal = false)
+            boxBlurPass(cur, tmp, w, h, r, horizontal = true)
+            boxBlurPass(tmp, cur, w, h, r, horizontal = false)
         }
         return cur
     }
@@ -148,23 +149,28 @@ object DeblurProcessor {
 
     // ---------------------------------------------------------------- unsharp
 
-    /** out = src + amount * (src - blurred), avec clamp doux. */
+    /** out = src + amount * (src - blurred), avec clamp doux. Ne modifie pas src. */
     fun unsharp(src: IntArray, blurred: IntArray, amount: Float): IntArray {
-        val out = IntArray(src.size)
-        for (i in src.indices) {
-            val s = src[i]; val b = blurred[i]
+        val out = src.copyOf()
+        unsharpInPlace(out, blurred, amount)
+        return out
+    }
+
+    /** Même calcul que [unsharp], mais écrit directement dans target (aucune allocation). */
+    fun unsharpInPlace(target: IntArray, blurred: IntArray, amount: Float) {
+        for (i in target.indices) {
+            val s = target[i]; val b = blurred[i]
             val a = (s shr 0) and 0xFF
             val r = (s shr 8) and 0xFF
             val g = (s shr 16) and 0xFF
             val bl = (s shr 24) and 0xFF
-            out[i] = pack(
+            target[i] = pack(
                 sharpen(a, (b shr 0) and 0xFF, amount),
                 sharpen(r, (b shr 8) and 0xFF, amount),
                 sharpen(g, (b shr 16) and 0xFF, amount),
                 sharpen(bl, (b shr 24) and 0xFF, amount)
             )
         }
-        return out
     }
 
     private fun sharpen(v: Int, blur: Int, amount: Float): Int {
