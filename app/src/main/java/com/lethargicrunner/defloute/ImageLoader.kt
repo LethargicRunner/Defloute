@@ -16,8 +16,9 @@ object ImageLoader {
     /** Décode une image (Uri SAF) en respectant l'orientation EXIF. */
     fun decode(context: Context, uri: Uri, maxDim: Int = 2048): LoadedImage? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            ?: return null
+        val boundsStream = context.contentResolver.openInputStream(uri) ?: return null
+        boundsStream.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
         var sample = 1
         var dim = maxOf(bounds.outWidth, bounds.outHeight)
@@ -74,7 +75,7 @@ object ImageLoader {
     }
 
     fun fromPixels(px: IntArray, w: Int, h: Int): Bitmap =
-        Bitmap.createBitmap(px, 0, w, w, h, Bitmap.Config.ARGB_8888, false)
+        Bitmap.createBitmap(px, 0, w, w, h, Bitmap.Config.ARGB_8888)
 
     fun closeStreamQuietly(s: InputStream?) { try { s?.close() } catch (_: Exception) {} }
 }
