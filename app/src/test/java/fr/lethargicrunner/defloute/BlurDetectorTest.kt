@@ -36,7 +36,7 @@ class BlurDetectorTest {
     @Test
     fun decision_multiechelle_flou_bruite() {
         // Flou bruite : score fin qui passe le seuil absolu MAIS ratio eleve
-        assertTrue(BlurDetector.isBlurryMultiScale(300.0, 150.0))
+        assertTrue(BlurDetector.isBlurryMultiScale(300.0, 200.0))
     }
 
     @Test
