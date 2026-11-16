@@ -143,8 +143,8 @@ fun HelpDialog(onClose: () -> Unit) {
                         "2. Choisis un mode :\n" +
                         "• Classique : rapide (quelques secondes), le résultat se met à jour quand tu bouges les réglages.\n" +
                         "• IA Real-ESRGAN : plus lent (1 à 5 minutes) mais bien plus détaillé. Appuie sur « Lancer l'amélioration IA » ; tu peux mettre en pause, reprendre ou annuler à tout moment.\n" +
-                        "3. Compare : le curseur au milieu de l'image montre l'AVANT à gauche et l'APRÈS à droite, glisse-le où tu veux.\n" +
-                        "4. Appuie sur « Enregistrer dans un dossier » : la photo améliorée est ajoutée (jamais d'écrasement de l'original)."
+                        "3. Compare : le curseur au milieu de l'image montre l'AVANT à gauche et l'APRÈS à droite, glisse-le où tu veux. La vue « Côte à côte » montre les deux versions zoomées en même temps.\n" +
+                        "4. Appuie sur « Enregistrer » : la photo améliorée est ajoutée (jamais d'écrasement de l'original), en JPEG ou en PNG sans perte."
                 )
                 HelpSection(
                     "Zoom et loupe",
@@ -156,7 +156,10 @@ fun HelpDialog(onClose: () -> Unit) {
                     "Les réglages",
                     "• Force : intensité de la netteté (mode Classique). Le bouton « Auto » la règle selon le flou détecté. Au-delà de 70 %, des halos peuvent apparaître.\n" +
                         "• Upscale x2 : double la taille de l'image avant le traitement (mode Classique).\n" +
-                        "• Réduire le bruit : adoucit le grain sans effacer les contours. Garde-le activé pour les photos sombres ou prises de nuit.\n" +
+                        "• Réduire le bruit : adoucit le grain sans effacer les contours (filtre bilatéral).\n" +
+                        "• Bruit fort (NLM) : filtre non-local means, plus lent mais bien plus efficace sur le gros grain des photos de nuit. Prévu pour les images jusqu'à ~1024 px.\n" +
+                        "• Flou de mouvement : détecte la direction du bougé (photo prise en bougeant) et la déconvolue. Désactivé automatiquement si aucune direction dominante n'est trouvée.\n" +
+                        "• Micro-contraste : passe finale très douce qui redonne du relief aux micro-détails.\n" +
                         "• Corriger lumière et contraste : étire les contrastes, éclaircit les ombres et tasse un peu les zones très claires.\n" +
                         "• Netteté : le score avant → après. Plus il est élevé, plus l'image est nette."
                 )
@@ -238,7 +241,6 @@ fun CompareSlider(before: Bitmap, after: Bitmap, modifier: Modifier = Modifier) 
             drawLine(Color.White, Offset(x, 0f), Offset(x, size.height), strokeWidth = 4f)
             drawCircle(Color.White, radius = 22f, center = Offset(x, size.height / 2f))
             drawCircle(DeflouteColors.Teal, radius = 17f, center = Offset(x, size.height / 2f))
-            // flèches de la poignée
             drawLine(Color.White, Offset(x - 8f, size.height / 2f), Offset(x - 3f, size.height / 2f), strokeWidth = 3f)
             drawLine(Color.White, Offset(x + 3f, size.height / 2f), Offset(x + 8f, size.height / 2f), strokeWidth = 3f)
         }
@@ -261,6 +263,25 @@ fun CompareSlider(before: Bitmap, after: Bitmap, modifier: Modifier = Modifier) 
                 .padding(8.dp)
                 .background(Color(0x99000000), RoundedCornerShape(6.dp))
                 .padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
+}
+
+// ------------------------------------------------------------------ Côte à côte (zoom synchronisé)
+
+@Composable
+fun SideBySide(before: Bitmap, after: Bitmap, zoom: Float, onZoomChange: (Float) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier) {
+        ZoomableImage(
+            bitmap = before, contentDescription = "Avant",
+            zoom = zoom, onZoomChange = onZoomChange, loupeEnabled = false,
+            modifier = Modifier.weight(1f).fillMaxHeight()
+        )
+        Spacer(Modifier.width(2.dp).background(Color(0xFF0A0D0F)))
+        ZoomableImage(
+            bitmap = after, contentDescription = "Après",
+            zoom = zoom, onZoomChange = onZoomChange, loupeEnabled = false,
+            modifier = Modifier.weight(1f).fillMaxHeight()
         )
     }
 }
@@ -330,16 +351,13 @@ fun ZoomableImage(
                 val bw = bitmap.width.toFloat()
                 val bh = bitmap.height.toFloat()
                 if (viewSize.width == 0 || viewSize.height == 0) return@Canvas
-                // Rect affiché par ContentScale.Fit
                 val k = min(viewSize.width / bw, viewSize.height / bh)
                 val dw = bw * k
                 val dh = bh * k
                 val ox = (viewSize.width - dw) / 2f + offset.x
                 val oy = (viewSize.height - dh) / 2f + offset.y
-                // Point sous le doigt, en coordonnées bitmap (zoom appliqué)
                 val bx = (pos.x - ox) / (k * zoom)
                 val by = (pos.y - oy) / (k * zoom)
-                // Fenêtre source : rayon loupe / zoom loupe, en pixels bitmap
                 val srcHalf = loupeRadiusPx / (loupeZoom * k * zoom)
                 val sx = (bx - srcHalf).toInt().coerceIn(0, (bw - 2 * srcHalf).toInt().coerceAtLeast(0))
                 val sy = (by - srcHalf).toInt().coerceIn(0, (bh - 2 * srcHalf).toInt().coerceAtLeast(0))
@@ -404,20 +422,21 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { vm.load(it) }
     }
+    val isAi = s.mode == DeblurViewModel.Mode.AI
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var loupe by remember { mutableStateOf(false) }
+    var savePng by remember { mutableStateOf(false) }
+    // 0 = comparateur à curseur, 1 = avant, 2 = après, 3 = côte à côte
+    var viewMode by remember { mutableIntStateOf(0) }
     val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let { saveUri ->
             val ctx = vm.getApplication<android.app.Application>()
             s.result?.let { bmp ->
                 val name = "defloute-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-                ImageSaver.saveToTree(ctx, saveUri, bmp, name)
+                ImageSaver.saveToTree(ctx, saveUri, bmp, name, png = savePng)
             }
         }
     }
-    val isAi = s.mode == DeblurViewModel.Mode.AI
-    var zoom by remember { mutableFloatStateOf(1f) }
-    var loupe by remember { mutableStateOf(false) }
-    // 0 = comparateur à curseur, 1 = avant, 2 = après
-    var viewMode by remember { mutableIntStateOf(0) }
 
     Column(
         Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
@@ -454,80 +473,89 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
         if (sourceBmp != null) {
             val canCompare = resultBmp != null && !s.processing
             val showCompare = viewMode == 0 && canCompare
+            val showSideBySide = viewMode == 3 && canCompare
 
             Surface(
                 shape = MaterialTheme.shapes.large,
                 tonalElevation = 2.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                if (showCompare) {
-                    CompareSlider(
+                when {
+                    showCompare -> CompareSlider(
                         before = sourceBmp,
                         after = resultBmp,
                         modifier = Modifier.fillMaxWidth().height(380.dp).background(Color(0xFF0A0D0F))
                     )
-                } else {
-                    val bmp = if (viewMode == 2 && resultBmp != null) resultBmp else sourceBmp
-                    ZoomableImage(
-                        bitmap = bmp,
-                        contentDescription = if (viewMode == 2) "Après" else "Avant",
+                    showSideBySide -> SideBySide(
+                        before = sourceBmp,
+                        after = resultBmp,
                         zoom = zoom,
                         onZoomChange = { zoom = it },
-                        loupeEnabled = loupe,
                         modifier = Modifier.fillMaxWidth().height(380.dp).background(Color(0xFF0A0D0F))
                     )
+                    else -> {
+                        val bmp = if (viewMode == 2 && resultBmp != null) resultBmp else sourceBmp
+                        ZoomableImage(
+                            bitmap = bmp,
+                            contentDescription = if (viewMode == 2) "Après" else "Avant",
+                            zoom = zoom,
+                            onZoomChange = { zoom = it },
+                            loupeEnabled = loupe,
+                            modifier = Modifier.fillMaxWidth().height(380.dp).background(Color(0xFF0A0D0F))
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(8.dp))
 
             // Sélecteur de vue + loupe
             Row(verticalAlignment = Alignment.CenterVertically) {
-                FilterChip(
-                    selected = viewMode == 0,
-                    enabled = canCompare,
-                    onClick = { viewMode = 0 },
-                    label = { Text("Comparer") }
-                )
-                Spacer(Modifier.width(6.dp))
+                FilterChip(selected = viewMode == 0, enabled = canCompare, onClick = { viewMode = 0 }, label = { Text("Comparer") })
+                Spacer(Modifier.width(5.dp))
                 FilterChip(selected = viewMode == 1, onClick = { viewMode = 1 }, label = { Text("Avant") })
-                Spacer(Modifier.width(6.dp))
-                FilterChip(
-                    selected = viewMode == 2,
-                    enabled = resultBmp != null,
-                    onClick = { viewMode = 2 },
-                    label = { Text("Après") }
-                )
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(5.dp))
+                FilterChip(selected = viewMode == 2, enabled = resultBmp != null, onClick = { viewMode = 2 }, label = { Text("Après") })
+                Spacer(Modifier.width(5.dp))
+                FilterChip(selected = viewMode == 3, enabled = canCompare, onClick = { viewMode = 3 }, label = { Text("2 vues") })
+                Spacer(Modifier.width(5.dp))
                 FilterChip(
                     selected = loupe,
-                    onClick = { loupe = !loupe; if (loupe) { zoom = 1f; if (viewMode == 0) viewMode = 1 } },
+                    onClick = { loupe = !loupe; if (loupe) { zoom = 1f; if (viewMode != 1 && viewMode != 2) viewMode = 1 } },
                     label = { Text(if (loupe) "Loupe ON" else "Loupe") }
                 )
             }
 
-            if (!showCompare && !loupe) {
-                Spacer(Modifier.height(6.dp))
-                Text("Zoom : ${(zoom * 100).toInt()} %", style = MaterialTheme.typography.bodySmall)
-                Slider(value = zoom, onValueChange = { zoom = it }, valueRange = 1f..8f)
-                Text(
-                    "Astuce : pince aussi l'image à deux doigts, double-tape pour revenir à 100 %.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else if (showCompare) {
-                Spacer(Modifier.height(6.dp))
-                Text(
+            when {
+                showCompare -> Text(
                     "Glisse le curseur sur l'image : AVANT à gauche, APRÈS à droite.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
                 )
-            } else {
-                Spacer(Modifier.height(6.dp))
-                Text(
+                showSideBySide -> {
+                    Text(
+                        "Zoom synchronisé sur les deux vues : ${(zoom * 100).toInt()} %",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                    Slider(value = zoom, onValueChange = { zoom = it }, valueRange = 1f..8f)
+                }
+                loupe -> Text(
                     "Glisse le doigt sur l'image : la loupe agrandit la zone sous le doigt.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
                 )
+                else -> {
+                    Text("Zoom : ${(zoom * 100).toInt()} %", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                    Slider(value = zoom, onValueChange = { zoom = it }, valueRange = 1f..8f)
+                    Text(
+                        "Astuce : pince aussi l'image à deux doigts, double-tape pour revenir à 100 %.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             if (resultBmp != null) {
                 Spacer(Modifier.height(4.dp))
@@ -540,6 +568,9 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
         // --- réglages
         SettingsCard {
             SwitchRow("Réduire le bruit", s.denoise, enabled = !s.processing) { vm.toggleDenoise() }
+            SwitchRow("Bruit fort (NLM, plus lent)", s.nlm, enabled = !s.processing) { vm.toggleNlm() }
+            SwitchRow("Flou de mouvement", s.motion, enabled = !s.processing) { vm.toggleMotion() }
+            SwitchRow("Micro-contraste", s.micro, enabled = !s.processing) { vm.toggleMicro() }
             SwitchRow("Corriger lumière et contraste", s.tone, enabled = !s.processing) { vm.toggleTone() }
 
             if (!isAi) {
@@ -589,7 +620,13 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
 
         if (s.result != null && !s.processing) {
             Spacer(Modifier.height(8.dp))
-            Button(onClick = { pickFolder.launch(null) }) { Text("Enregistrer dans un dossier") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilterChip(selected = !savePng, onClick = { savePng = false }, label = { Text("JPEG") })
+                Spacer(Modifier.width(6.dp))
+                FilterChip(selected = savePng, onClick = { savePng = true }, label = { Text("PNG (sans perte)") })
+                Spacer(Modifier.width(10.dp))
+                Button(onClick = { pickFolder.launch(null) }) { Text("Enregistrer") }
+            }
         }
     }
 }

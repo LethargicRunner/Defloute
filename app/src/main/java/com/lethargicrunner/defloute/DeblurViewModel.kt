@@ -31,6 +31,12 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         val upscale: Boolean = true,
         val denoise: Boolean = true,
         val tone: Boolean = true,
+        /** Défloutage directionnel (flou de mouvement), les deux modes. */
+        val motion: Boolean = false,
+        /** Réduction de bruit renforcée (non-local means), les deux modes. */
+        val nlm: Boolean = false,
+        /** Passe micro-contraste finale, les deux modes. */
+        val micro: Boolean = false,
         val scoreBefore: Int = 0,
         val scoreAfter: Int = 0,
         val showAfter: Boolean = true,
@@ -61,7 +67,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.mode == m) return
         job?.cancel()
         pauseRequested = false
-        update { it.copy(mode = m, processing = false, error = null, result = null, progress = 0f, stage = "") }
+        update { it.copy(mode = m, processing = false, error = null, result = null, progress = 0f, stage = "", paused = false) }
         if (m == Mode.CLASSIC && _state.value.source != null) process()
     }
 
@@ -82,6 +88,21 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleTone() {
         update { it.copy(tone = !it.tone) }
+        if (_state.value.mode == Mode.CLASSIC && _state.value.source != null) process(debounceMs = 300)
+    }
+
+    fun toggleMotion() {
+        update { it.copy(motion = !it.motion) }
+        if (_state.value.mode == Mode.CLASSIC && _state.value.source != null) process(debounceMs = 300)
+    }
+
+    fun toggleNlm() {
+        update { it.copy(nlm = !it.nlm) }
+        if (_state.value.mode == Mode.CLASSIC && _state.value.source != null) process(debounceMs = 300)
+    }
+
+    fun toggleMicro() {
+        update { it.copy(micro = !it.micro) }
         if (_state.value.mode == Mode.CLASSIC && _state.value.source != null) process(debounceMs = 300)
     }
 
@@ -145,7 +166,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Traitement classique (rapide) : bruit -> tons -> upscale + netteté. */
+    /** Traitement classique (rapide) : bruit -> tons -> mouvement -> upscale + netteté -> micro. */
     fun process(debounceMs: Long = 0) {
         val src = _state.value.source ?: return
         if (_state.value.mode != Mode.CLASSIC) return
@@ -158,10 +179,22 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                 val res = withContext(Dispatchers.Default) {
                     val (orig, w) = ImageLoader.toPixels(src)
                     val h = src.height
-                    val base = prepare(orig, w, h, st.denoise, st.tone, "classic")
                     ensureActive()
+                    var base = prepare(orig, w, h, st.denoise, st.tone, st.nlm, "classic")
+                    if (st.motion) {
+                        update { it.copy(stage = "Défloutage directionnel…") }
+                        base = MotionDeblur.autoDeblur(base, w, h, strength = 0.8f)
+                        ensureActive()
+                    }
                     val out = DeblurProcessor.process(base, w, h, DeblurProcessor.Params(st.strength, st.upscale))
-                    val bmp = ImageLoader.fromPixels(out.pixels, out.width, out.height)
+                    var outPx = out.pixels
+                    var outW = out.width
+                    var outH = out.height
+                    if (st.micro) {
+                        update { it.copy(stage = "Micro-contraste…") }
+                        outPx = EnhanceExtras.microContrast(outPx, outW, outH, 0.4f)
+                    }
+                    val bmp = ImageLoader.fromPixels(outPx, outW, outH)
                     // scores comparables : mêmes dimensions réduites avant / après
                     Triple(bmp, scoreOf(src), scoreOf(bmp))
                 }
@@ -182,7 +215,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Traitement IA (lent) : bruit -> tons -> Real-ESRGAN x4 par tuiles. Lancé par un bouton. */
+    /** Traitement IA (lent) : bruit -> tons -> mouvement -> Real-ESRGAN x4 par tuiles -> micro. */
     fun processAi() {
         val src = _state.value.source ?: return
         val st = _state.value
@@ -192,7 +225,8 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         job?.cancel()
-        update { it.copy(processing = true, error = null, progress = 0f, stage = "Préparation…") }
+        pauseRequested = false
+        update { it.copy(processing = true, error = null, paused = false, progress = 0f, stage = "Préparation…") }
         job = viewModelScope.launch {
             try {
                 val res = withContext(Dispatchers.Default) {
@@ -209,8 +243,12 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                     ensureActive()
 
                     update { it.copy(stage = "Réduction du bruit et correction de la lumière…") }
-                    val base = prepare(orig, w, h, st.denoise, st.tone, "ai")
-                    ensureActive()
+                    var base = prepare(orig, w, h, st.denoise, st.tone, st.nlm, "ai")
+                    if (st.motion) {
+                        update { it.copy(stage = "Défloutage directionnel…") }
+                        base = MotionDeblur.autoDeblur(base, w, h, strength = 0.8f)
+                        ensureActive()
+                    }
 
                     // 2) super-résolution par tuiles
                     val out = EsrganUpscaler.upscale(
@@ -231,10 +269,20 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                     )
                     if (work !== src) work.recycle()
 
-                    // 3) scores comparables : mêmes dimensions réduites avant / après
+                    // 3) micro-contraste final
+                    var outBmp = out
+                    if (st.micro) {
+                        update { it.copy(stage = "Micro-contraste…") }
+                        val (opx, ow) = ImageLoader.toPixels(out)
+                        val fixed = EnhanceExtras.microContrast(opx, ow, out.height, 0.4f)
+                        outBmp = ImageLoader.fromPixels(fixed, ow, out.height)
+                        out.recycle()
+                    }
+
+                    // 4) scores comparables : mêmes dimensions réduites avant / après
                     val before = scoreOf(src)
-                    val after = scoreOf(out)
-                    Triple(out, before, after)
+                    val after = scoreOf(outBmp)
+                    Triple(outBmp, before, after)
                 }
                 update {
                     it.copy(
@@ -256,12 +304,13 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Bruit + tons, avec cache (valable tant que la source et les options ne changent pas). */
-    private fun prepare(orig: IntArray, w: Int, h: Int, denoise: Boolean, tone: Boolean, tag: String): IntArray {
-        val key = "$tag-$w-$h-$denoise-$tone"
+    private fun prepare(orig: IntArray, w: Int, h: Int, denoise: Boolean, tone: Boolean, nlm: Boolean, tag: String): IntArray {
+        val key = "$tag-$w-$h-$denoise-$tone-$nlm"
         val cached = prepared
         if (cached != null && preparedKey == key) return cached
         var cur = orig
         if (denoise) cur = ImageEnhancer.denoise(cur, w, h, 0.6f)
+        if (nlm) cur = NlmDenoise.denoise(cur, w, h, strength = 0.7f)
         if (tone) cur = ImageEnhancer.tone(cur, w, h, ImageEnhancer.ToneParams())
         if (cur === orig) cur = orig.copyOf()
         prepared = cur; preparedKey = key
@@ -286,4 +335,3 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             "Image trop grande pour la mémoire : désactive l'upscale x2 ou choisis une image plus petite"
     }
 }
-
