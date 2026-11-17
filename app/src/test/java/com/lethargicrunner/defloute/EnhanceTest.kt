@@ -1,10 +1,8 @@
 package com.lethargicrunner.defloute
 
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
 class EnhanceTest {
 
@@ -31,6 +29,15 @@ class EnhanceTest {
             }
         }
         return out
+    }
+
+    /** Bruit pseudo-aléatoire déterministe (LCG) : ni structuré ni périodique, comme du vrai grain. */
+    private fun noisyPx(w: Int, h: Int, base: Int, amp: Int): IntArray {
+        var seed = 987654321L
+        return IntArray(w * h) {
+            seed = (seed * 1103515245L + 12345L) and 0x7fffffffL
+            grayPixel((base + (seed % (2 * amp + 1)).toInt() - amp).coerceIn(0, 255))
+        }
     }
 
     @Test
@@ -67,8 +74,9 @@ class EnhanceTest {
     fun `nlm supprime le bruit d une zone plate sans la changer autrement`() {
         val w = 32; val h = 32
         val clean = IntArray(w * h) { grayPixel(128) }
-        // bruit +-30 sur la luminance
-        val noisy = IntArray(w * h) { i -> grayPixel((128 + if (i % 2 == 0) 30 else -30).coerceIn(0, 255)) }
+        // bruit pseudo-aléatoire +-30 sur la luminance (un bruit périodique serait
+        // préservé par NLM : les patches identiques ont un poids maximal)
+        val noisy = noisyPx(w, h, 128, 30)
         val out = NlmDenoise.denoise(noisy, w, h, strength = 0.9f)
         // l'écart à 128 doit diminuer nettement
         fun dev(p: IntArray): Double = lumPx(p).map { abs(it - 128) }.average()

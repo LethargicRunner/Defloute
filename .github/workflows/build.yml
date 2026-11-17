@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,8 +21,6 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # Installe vraiment Gradle 8.7 (sans gradle-version, setup-gradle ne fournit
-      # aucune binaire "gradle" : le wrapper n'etait jamais genere et le build echouait).
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -45,3 +47,25 @@ jobs:
         with:
           name: Defloute-APK
           path: Defloute-v*.apk
+
+      # Diagnostic : en cas d'échec, publie le détail des tests qui plantent
+      # dans une issue GitHub (lisible sans droits admin).
+      - name: Report test failures
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Échec CI sur ${GITHUB_SHA::8}"
+            echo
+            if ls app/build/test-results/testDebugUnitTest/*.xml >/dev/null 2>&1; then
+              for f in app/build/test-results/testDebugUnitTest/*.xml; do
+                grep -o '<testcase name="[^"]*"[^/>]*' "$f" | head -50
+                grep -B1 -A8 '<failure' "$f" | head -80
+              done
+            else
+              echo "Pas de résultats de tests : échec probable de COMPILATION."
+              find app/build -name '*.log' 2>/dev/null | head
+            fi
+          } > /tmp/report.md
+          gh issue create -R "${GITHUB_REPOSITORY}" -t "CI échec ${GITHUB_SHA::8}" -F /tmp/report.md || true
