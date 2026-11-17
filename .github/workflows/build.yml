@@ -6,8 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
-  issues: write
+  contents: write
 
 jobs:
   build:
@@ -48,24 +47,19 @@ jobs:
           name: Defloute-APK
           path: Defloute-v*.apk
 
-      # Diagnostic : en cas d'échec, publie le détail des tests qui plantent
-      # dans une issue GitHub (lisible sans droits admin).
-      - name: Report test failures
+      # Diagnostic : en cas d'echec, publie le log (erreurs extraites) sur la branche ci-logs
+      - name: Publish failure logs
         if: failure()
         env:
-          GH_TOKEN: ${{ github.token }}
+          TOKEN: ${{ github.token }}
         run: |
-          {
-            echo "Échec CI sur ${GITHUB_SHA::8}"
-            echo
-            if ls app/build/test-results/testDebugUnitTest/*.xml >/dev/null 2>&1; then
-              for f in app/build/test-results/testDebugUnitTest/*.xml; do
-                grep -o '<testcase name="[^"]*"[^/>]*' "$f" | head -50
-                grep -B1 -A8 '<failure' "$f" | head -80
-              done
-            else
-              echo "Pas de résultats de tests : échec probable de COMPILATION."
-              find app/build -name '*.log' 2>/dev/null | head
-            fi
-          } > /tmp/report.md
-          gh issue create -R "${GITHUB_REPOSITORY}" -t "CI échec ${GITHUB_SHA::8}" -F /tmp/report.md || true
+          ./gradlew compileDebugKotlin testDebugUnitTest --no-daemon --stacktrace > /tmp/build.log 2>&1 || true
+          grep -E "^e: |error: |FAILURE|What went wrong" /tmp/build.log | head -80 > /tmp/errors.txt || true
+          tail -60 /tmp/build.log >> /tmp/errors.txt || true
+          mkdir /tmp/pub && cp /tmp/build.log /tmp/errors.txt /tmp/pub/
+          cd /tmp/pub
+          git init -q -b ci-logs
+          git config user.email "ci@local" && git config user.name "ci"
+          git add -A
+          git commit -qm "logs ${GITHUB_SHA::8}"
+          git push -qf "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-logs
