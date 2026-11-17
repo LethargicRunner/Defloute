@@ -44,7 +44,16 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         val progress: Float = 0f,
         val stage: String = "",
         /** Vrai quand le traitement IA est suspendu (bouton Pause). */
-        val paused: Boolean = false
+        val paused: Boolean = false,
+        /** Heure de lancement du traitement (ms) : sert au nom du fichier enregistré. */
+        val startedAt: Long = 0L,
+        /** Heure de fin estimée du traitement IA (ms), 0 tant qu'elle n'est pas calculable. */
+        val etaAt: Long = 0L,
+        /** Part (0..1) de pixels blancs / noirs purs dans la source : zones non récupérables. */
+        val clipWhite: Float = 0f,
+        val clipBlack: Float = 0f,
+        /** Information affichée à l'utilisateur (ex. pause ou annulation automatique). */
+        val notice: String? = null
     )
 
     private val _state = MutableStateFlow(State())
@@ -113,6 +122,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
     fun cancel() {
         job?.cancel()
         pauseRequested = false
+        autoPaused = false
         update { it.copy(processing = false, paused = false, progress = 0f, stage = "") }
     }
 
@@ -126,6 +136,36 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
     fun resume() {
         pauseRequested = false
         update { it.copy(paused = false, stage = it.stage.removeSuffix(" — en pause")) }
+    }
+
+    /** Vrai si la pause en cours a été déclenchée automatiquement (app en arrière-plan). */
+    private var autoPaused = false
+
+    /** L'app n'est plus visible (accueil, écran en veille) : applique le réglage choisi par l'utilisateur. */
+    fun onAppHidden(policy: AppSettings.BgPolicy) {
+        val st = _state.value
+        if (!st.processing) return
+        when (policy) {
+            AppSettings.BgPolicy.PAUSE -> if (st.mode == Mode.AI && !st.paused) {
+                pause()
+                autoPaused = true
+                update { it.copy(notice = "Traitement mis en pause automatiquement : il reprendra à ton retour dans l'application.") }
+            }
+            AppSettings.BgPolicy.CANCEL -> {
+                cancel()
+                update { it.copy(notice = "Traitement annulé automatiquement : l'application est passée en arrière-plan ou l'écran s'est éteint.") }
+            }
+            else -> Unit // CONTINUE (service) ou NOTHING
+        }
+    }
+
+    /** L'app est de nouveau visible : reprend une pause automatique. */
+    fun onAppVisible() {
+        if (autoPaused) {
+            autoPaused = false
+            resume()
+            update { it.copy(notice = null) }
+        }
     }
 
     /**
@@ -150,11 +190,19 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         job = viewModelScope.launch {
             update { it.copy(processing = true, error = null, stage = "Chargement…") }
             try {
-                val bmp = withContext(Dispatchers.IO) {
-                    ImageLoader.decode(getApplication(), uri, maxDim = 1536)?.bitmap
+                val loaded = withContext(Dispatchers.IO) {
+                    ImageLoader.decode(getApplication(), uri, maxDim = 1536)?.bitmap?.let { b ->
+                        Pair(b, ImageEnhancer.clippedFractions(ImageLoader.toPixels(b).first))
+                    }
                 } ?: throw IllegalArgumentException("Image illisible")
+                val bmp = loaded.first
                 prepared = null; preparedKey = null
-                update { it.copy(source = bmp, result = null, processing = false, stage = "") }
+                update {
+                    it.copy(
+                        source = bmp, result = null, processing = false, stage = "",
+                        clipWhite = loaded.second.first, clipBlack = loaded.second.second
+                    )
+                }
                 if (_state.value.mode == Mode.CLASSIC) process()
             } catch (e: CancellationException) {
                 throw e
@@ -172,7 +220,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.mode != Mode.CLASSIC) return
         val st = _state.value
         job?.cancel()
-        update { it.copy(processing = true, error = null, progress = 0f, stage = "Traitement…") }
+        update { it.copy(processing = true, error = null, progress = 0f, stage = "Traitement…", startedAt = System.currentTimeMillis(), etaAt = 0L, notice = null) }
         job = viewModelScope.launch {
             try {
                 if (debounceMs > 0) delay(debounceMs)
@@ -216,7 +264,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Traitement IA (lent) : bruit -> tons -> mouvement -> Real-ESRGAN x4 par tuiles -> micro. */
-    fun processAi() {
+    fun processAi(keepAlive: Boolean = false) {
         val src = _state.value.source ?: return
         val st = _state.value
         val app = getApplication<Application>()
@@ -226,7 +274,8 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         }
         job?.cancel()
         pauseRequested = false
-        update { it.copy(processing = true, error = null, paused = false, progress = 0f, stage = "Préparation…") }
+        update { it.copy(processing = true, error = null, paused = false, progress = 0f, stage = "Préparation…", startedAt = System.currentTimeMillis(), etaAt = 0L, notice = null) }
+        if (keepAlive) KeepAliveService.start(app)
         job = viewModelScope.launch {
             try {
                 val res = withContext(Dispatchers.Default) {
@@ -250,14 +299,19 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                         ensureActive()
                     }
 
-                    // 2) super-résolution par tuiles
+                    // 2) super-résolution par tuiles (avec heure de fin estimée)
+                    val tilesStart = System.currentTimeMillis()
                     val out = EsrganUpscaler.upscale(
                         app, base, w, h,
                         onTile = { done, total ->
+                            val elapsed = System.currentTimeMillis() - tilesStart
+                            val eta = tilesStart + elapsed * total / done
+                            if (keepAlive) KeepAliveService.update(app, done, total, eta)
                             update {
                                 it.copy(
                                     progress = done.toFloat() / total,
-                                    stage = "IA : tuile $done / $total"
+                                    stage = "IA : tuile $done / $total",
+                                    etaAt = eta
                                 )
                             }
                         },
@@ -299,6 +353,8 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Throwable) {
                 pauseRequested = false
                 update { it.copy(processing = false, paused = false, progress = 0f, stage = "", error = "Erreur IA : " + (e.message ?: e.javaClass.simpleName)) }
+            } finally {
+                if (keepAlive) KeepAliveService.stop(app)
             }
         }
     }

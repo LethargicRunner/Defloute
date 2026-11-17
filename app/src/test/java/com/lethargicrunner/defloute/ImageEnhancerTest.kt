@@ -89,4 +89,15 @@ class ImageEnhancerTest {
         assertEquals(src.size, out.size)
         assertTrue(out.all { lum(it) == 100 })
     }
+
+    @Test
+    fun `fractions de pixels brules et bouches`() {
+        val px = IntArray(100) { i -> if (i < 20) gray(255) else if (i < 25) gray(0) else gray(128) }
+        val (white, black) = ImageEnhancer.clippedFractions(px)
+        assertTrue("blanc $white", kotlin.math.abs(white - 0.20f) < 0.001f)
+        assertTrue("noir $black", kotlin.math.abs(black - 0.05f) < 0.001f)
+        val none = ImageEnhancer.clippedFractions(IntArray(10) { gray(128) })
+        assertEquals(0f, none.first)
+        assertEquals(0f, none.second)
+    }
 }

@@ -26,9 +26,9 @@ object BlurDetector {
         val lum = FloatArray(w * h)
         for (i in px.indices) {
             val p = px[i]
-            val r = (p shr 8) and 0xFF
-            val g = (p shr 16) and 0xFF
-            val b = (p shr 24) and 0xFF
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
             lum[i] = 0.299f * r + 0.587f * g + 0.114f * b
         }
         var sum = 0.0

@@ -137,6 +137,21 @@ object ImageEnhancer {
         DeblurProcessor.unsharpInPlace(px, blurred, 0.6f * a)
     }
 
+    /**
+     * Part (0..1) de pixels blancs purs (luminance ≥ 252) et noirs purs (≤ 3) : zones sans information,
+     * qu'aucun traitement ne peut récupérer. Renvoie (blanc, noir).
+     */
+    fun clippedFractions(px: IntArray): Pair<Float, Float> {
+        if (px.isEmpty()) return Pair(0f, 0f)
+        var white = 0
+        var black = 0
+        for (p in px) {
+            val l = lumaInt(p)
+            if (l >= 252) white++ else if (l <= 3) black++
+        }
+        return Pair(white.toFloat() / px.size, black.toFloat() / px.size)
+    }
+
     /** Enchaîne niveaux auto -> courbe -> clarté. Renvoie un nouveau tableau. */
     fun tone(px: IntArray, w: Int, h: Int, p: ToneParams): IntArray {
         val out = px.copyOf()

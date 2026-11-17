@@ -1,14 +1,21 @@
 package com.lethargicrunner.defloute
 
+import android.Manifest
+import android.app.Activity
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -49,14 +56,20 @@ import java.util.Locale
 import kotlin.math.min
 
 class MainActivity : ComponentActivity() {
+
+    /** Même instance que celle de l'écran Déflouter (ViewModel rattaché à l'activité). */
+    private val deblurVm: DeblurViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyOrientationLock(this, AppSettings.lockRotation(this))
         setContent {
             DeflouteTheme {
                 var tab by remember { mutableIntStateOf(0) }
                 var showHelp by remember { mutableStateOf(false) }
+                var showSettings by remember { mutableStateOf(false) }
                 Scaffold(
-                    topBar = { AppTopBar(onHelp = { showHelp = true }) },
+                    topBar = { AppTopBar(onHelp = { showHelp = true }, onSettings = { showSettings = true }) },
                     bottomBar = {
                         NavigationBar {
                             NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, label = { Text("Déflouter") }, icon = {})
@@ -69,8 +82,23 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 if (showHelp) HelpDialog(onClose = { showHelp = false })
+                if (showSettings) SettingsDialog(
+                    onClose = { showSettings = false },
+                    onLockChanged = { applyOrientationLock(this@MainActivity, it) }
+                )
             }
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Écran en veille ou retour à l'accueil : applique le réglage choisi (pause, annulation…).
+        deblurVm.onAppHidden(AppSettings.bgPolicy(this))
+    }
+
+    override fun onStart() {
+        super.onStart()
+        deblurVm.onAppVisible()
     }
 }
 
@@ -113,11 +141,29 @@ fun DeflouteTheme(content: @Composable () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppTopBar(onHelp: () -> Unit) {
+fun AppTopBar(onHelp: () -> Unit, onSettings: () -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    // Version de l'application installée (permet de vérifier quelle compilation tourne sur le téléphone).
+    val version = remember {
+        try {
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "?"
+        } catch (_: Exception) {
+            "?"
+        }
+    }
     TopAppBar(
-        title = { Text("Défloute", fontWeight = FontWeight.Bold) },
+        title = {
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text("Défloute", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(8.dp))
+                Text("v$version", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.75f))
+            }
+        },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = DeflouteColors.TealDark, titleContentColor = Color.White),
         actions = {
+            IconButton(onClick = onSettings) {
+                Text("⚙", style = MaterialTheme.typography.titleLarge, color = Color.White)
+            }
             IconButton(onClick = onHelp) {
                 Text("?", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Color.White)
             }
@@ -144,7 +190,7 @@ fun HelpDialog(onClose: () -> Unit) {
                         "• Classique : rapide (quelques secondes), le résultat se met à jour quand tu bouges les réglages.\n" +
                         "• IA Real-ESRGAN : plus lent (1 à 5 minutes) mais bien plus détaillé. Appuie sur « Lancer l'amélioration IA » ; tu peux mettre en pause, reprendre ou annuler à tout moment.\n" +
                         "3. Compare : le curseur au milieu de l'image montre l'AVANT à gauche et l'APRÈS à droite, glisse-le où tu veux. La vue « Côte à côte » montre les deux versions zoomées en même temps.\n" +
-                        "4. Appuie sur « Enregistrer » : la photo améliorée est ajoutée (jamais d'écrasement de l'original), en JPEG ou en PNG sans perte."
+                        "4. Appuie sur « Galerie » (dossier Pictures/Defloute, sans rien choisir) ou « Dossier… » pour choisir où enregistrer : la photo améliorée est ajoutée sans jamais écraser l'original, en JPEG ou en PNG sans perte. Le nom du fichier contient l'heure de lancement du traitement."
                 )
                 HelpSection(
                     "Zoom et loupe",
@@ -175,9 +221,19 @@ fun HelpDialog(onClose: () -> Unit) {
                         "Le scan ne modifie ni ne supprime jamais tes photos."
                 )
                 HelpSection(
+                    "Réglages ⚙",
+                    "• Verrouiller la rotation : l'écran garde sa position actuelle, même si tu tournes le téléphone. Décoche pour la libérer.\n" +
+                        "• Quand l'app passe en arrière-plan ou que l'écran s'éteint pendant un traitement :\n" +
+                        "  – Continuer : le traitement se poursuit grâce à une notification (consomme de la batterie) ;\n" +
+                        "  – Mettre en pause (par défaut) : il s'arrête et reprend à ton retour, rien n'est perdu ;\n" +
+                        "  – Annuler : le traitement est abandonné automatiquement ;\n" +
+                        "  – Ne rien faire : Android peut arrêter l'application, et le travail est alors perdu."
+                )
+                HelpSection(
                     "Ce qu'il faut savoir",
                     "• Aucune méthode ne retrouve un détail complètement perdu : l'IA le réinvente de façon plausible. Un visage ou un texte très flou peut sembler net mais être légèrement différent de la réalité.\n" +
-                        "• Les zones entièrement blanches (surexposées) ou noires ne se récupèrent pas.\n" +
+                        "• Les zones entièrement blanches (surexposées) ou noires ne se récupèrent pas : un avertissement ⚠ s'affiche quand elles dépassent 8 % de l'image.\n" +
+                        "• Pendant le traitement IA, l'heure de lancement et l'heure de fin estimée sont affichées.\n" +
                         "• Le mode IA réduit d'abord les grandes photos (1024 px max) puis les agrandit 4 fois : le résultat peut atteindre 4096 px.\n" +
                         "• Le mode IA chauffe le téléphone et consomme de la batterie : branche-le pour les grosses images.\n" +
                         "• Si l'application indique un manque de mémoire, désactive l'upscale x2 ou choisis une image plus petite."
@@ -424,17 +480,33 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
         uri?.let { vm.load(it) }
     }
     val isAi = s.mode == DeblurViewModel.Mode.AI
+    val appCtx = vm.getApplication<android.app.Application>()
+    // Autorisation d'afficher la notification (Android 13+) : demandée seulement si « Continuer en arrière-plan ».
+    val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+        vm.processAi(keepAlive = AppSettings.bgPolicy(appCtx) == AppSettings.BgPolicy.CONTINUE)
+    }
+    val startAi: () -> Unit = {
+        val keep = AppSettings.bgPolicy(appCtx) == AppSettings.BgPolicy.CONTINUE
+        if (keep && Build.VERSION.SDK_INT >= 33 &&
+            appCtx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            vm.processAi(keepAlive = keep)
+        }
+    }
     var zoom by remember { mutableFloatStateOf(1f) }
     var loupe by remember { mutableStateOf(false) }
     var savePng by remember { mutableStateOf(false) }
     // 0 = comparateur à curseur, 1 = avant, 2 = après, 3 = côte à côte
     var viewMode by remember { mutableIntStateOf(0) }
+    var savedMsg by remember { mutableStateOf<String?>(null) }
     val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         uri?.let { saveUri ->
             val ctx = vm.getApplication<android.app.Application>()
             s.result?.let { bmp ->
-                val name = "defloute-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-                ImageSaver.saveToTree(ctx, saveUri, bmp, name, png = savePng)
+                val done = ImageSaver.saveToTree(ctx, saveUri, bmp, "photo", png = savePng, stamp = ImageSaver.stampOf(s.startedAt))
+                savedMsg = if (done != null) "Enregistré dans le dossier choisi." else "Échec de l'enregistrement dans ce dossier."
             }
         }
     }
@@ -465,6 +537,23 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
         s.error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error)
+        }
+        s.notice?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+        }
+
+        if (s.source != null && (s.clipWhite > 0.08f || s.clipBlack > 0.08f)) {
+            Spacer(Modifier.height(8.dp))
+            val parts = buildList {
+                if (s.clipWhite > 0.08f) add("${(s.clipWhite * 100).toInt()} % de l'image est blanc pur (surexposé)")
+                if (s.clipBlack > 0.08f) add("${(s.clipBlack * 100).toInt()} % est noir pur")
+            }
+            Text(
+                "⚠ " + parts.joinToString(" et ") + " : ces zones ne contiennent plus aucune information, ni le mode classique ni l'IA ne pourront les récupérer.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary
+            )
         }
 
         Spacer(Modifier.height(12.dp))
@@ -592,7 +681,7 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { vm.processAi() }, enabled = s.source != null && !s.processing) {
+                Button(onClick = { startAi() }, enabled = s.source != null && !s.processing) {
                     Text("Lancer l'amélioration IA")
                 }
             }
@@ -607,6 +696,11 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
                 CircularProgressIndicator(Modifier.size(28.dp))
             }
             if (s.stage.isNotEmpty()) Text(s.stage, style = MaterialTheme.typography.bodySmall)
+            if (isAi && s.startedAt > 0L) {
+                val hm = SimpleDateFormat("HH:mm", Locale.getDefault())
+                val eta = if (s.etaAt > 0L) " · fin estimée ≈ " + hm.format(Date(s.etaAt)) else ""
+                Text("Lancé à " + hm.format(Date(s.startedAt)) + eta, style = MaterialTheme.typography.bodySmall)
+            }
             if (isAi) {
                 Spacer(Modifier.height(4.dp))
                 Row {
@@ -625,8 +719,26 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
                 FilterChip(selected = !savePng, onClick = { savePng = false }, label = { Text("JPEG") })
                 Spacer(Modifier.width(6.dp))
                 FilterChip(selected = savePng, onClick = { savePng = true }, label = { Text("PNG (sans perte)") })
-                Spacer(Modifier.width(10.dp))
-                Button(onClick = { pickFolder.launch(null) }) { Text("Enregistrer") }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (ImageSaver.galleryAvailable) {
+                    Button(onClick = {
+                        val ctx = vm.getApplication<android.app.Application>()
+                        s.result?.let { bmp ->
+                            val done = ImageSaver.saveToGallery(ctx, bmp, "photo", png = savePng, stamp = ImageSaver.stampOf(s.startedAt))
+                            savedMsg = if (done != null) "Enregistré dans la galerie (Pictures/Defloute)." else "Échec de l'enregistrement."
+                        }
+                    }) { Text("Galerie") }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = { pickFolder.launch(null) }) { Text("Dossier…") }
+                } else {
+                    Button(onClick = { pickFolder.launch(null) }) { Text("Enregistrer") }
+                }
+            }
+            savedMsg?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(it, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -710,4 +822,64 @@ fun ScanScreen(vm: ScanViewModel = viewModel()) {
             }
         }
     }
+}
+
+// ------------------------------------------------------------------ Réglages
+
+/** Verrouille l'écran dans sa position actuelle (ou libère la rotation). */
+fun applyOrientationLock(activity: Activity, lock: Boolean) {
+    activity.requestedOrientation =
+        if (lock) ActivityInfo.SCREEN_ORIENTATION_LOCKED else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+}
+
+@Composable
+fun SettingsDialog(onClose: () -> Unit, onLockChanged: (Boolean) -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var lock by remember { mutableStateOf(AppSettings.lockRotation(ctx)) }
+    var policy by remember { mutableStateOf(AppSettings.bgPolicy(ctx)) }
+    val choices = listOf(
+        AppSettings.BgPolicy.CONTINUE to "Continuer en arrière-plan (notification, consomme de la batterie)",
+        AppSettings.BgPolicy.PAUSE to "Mettre en pause, reprendre au retour (recommandé)",
+        AppSettings.BgPolicy.CANCEL to "Annuler automatiquement le traitement",
+        AppSettings.BgPolicy.NOTHING to "Ne rien faire (Android peut arrêter l'app)"
+    )
+    AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = onClose) { Text("Fermer") } },
+        title = { Text("Réglages") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = lock, onCheckedChange = {
+                        lock = it
+                        AppSettings.setLockRotation(ctx, it)
+                        onLockChanged(it)
+                    })
+                    Spacer(Modifier.width(10.dp))
+                    Text("Verrouiller la rotation de l'écran")
+                }
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Si l'app passe en arrière-plan ou si l'écran se met en veille pendant un traitement :",
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Spacer(Modifier.height(6.dp))
+                choices.forEach { (value, label) ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            policy = value
+                            AppSettings.setBgPolicy(ctx, value)
+                        },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = policy == value, onClick = {
+                            policy = value
+                            AppSettings.setBgPolicy(ctx, value)
+                        })
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
+    )
 }
