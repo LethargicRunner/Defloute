@@ -127,7 +127,7 @@ object MotionDeblur {
                     val tt = if (flip) -t else t
                     val sx = x + tt * dx
                     val sy = y + tt * dy
-                    acc += kernel[if (flip) r - (t + r) else t + r] * sampleBilinear(src, w, h, sx.toFloat(), sy.toFloat())
+                    acc += kernel[if (flip) r - t else t + r] * sampleBilinear(src, w, h, sx.toFloat(), sy.toFloat())
                 }
                 out[y * w + x] = if (normalize) acc else acc // noyau déjà normalisé (somme = 1)
             }

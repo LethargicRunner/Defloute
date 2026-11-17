@@ -52,10 +52,10 @@ object NlmDenoise {
                         // poids = ressemblance des patches (distance quadratique sur la luminance)
                         var ssd = 0f
                         for (py in -patchR..patchR) {
-                            val rowC = (y + py) * w
-                            val rowN = (ny + py) * w
+                            val rowC = (y + py).coerceIn(0, h - 1) * w
+                            val rowN = (ny + py).coerceIn(0, h - 1) * w
                             for (pxx in -patchR..patchR) {
-                                val d = lum[rowC + x + pxx] - lum[rowN + nx + pxx]
+                                val d = lum[rowC + (x + pxx).coerceIn(0, w - 1)] - lum[rowN + (nx + pxx).coerceIn(0, w - 1)]
                                 ssd += d * d
                             }
                         }

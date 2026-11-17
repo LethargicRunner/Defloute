@@ -43,7 +43,7 @@ class EnhanceTest {
     @Test
     fun `direction du mouvement detectee pour un flou horizontal`() {
         val w = 48; val h = 48
-        val sharp = IntArray(w * h) { i -> grayPixel(if ((i % w) < w / 2) 40 else 210) }
+        val sharp = IntArray(w * h) { i -> grayPixel(if (i / w < h / 2) 40 else 210) } // bandes horizontales : gradient vertical = mouvement horizontal
         val blurry = motionBlur(sharp, w, h, 3)
         val angle = MotionDeblur.estimateDirection(blurry, w, h)
         // mouvement horizontal -> angle proche de 0 ou PI (mod PI)
@@ -53,7 +53,7 @@ class EnhanceTest {
     @Test
     fun `deconvolution directionnelle augmente la nettete`() {
         val w = 48; val h = 48
-        val sharp = IntArray(w * h) { i -> grayPixel(if ((i % w) < w / 2) 40 else 210) }
+        val sharp = IntArray(w * h) { i -> grayPixel(if (i / w < h / 2) 40 else 210) } // bandes horizontales : gradient vertical = mouvement horizontal
         val blurry = motionBlur(sharp, w, h, 3)
         val angle = MotionDeblur.estimateDirection(blurry, w, h) ?: 0f
         val restored = MotionDeblur.deblur(blurry, w, h, angle, length = 7, iterations = 8)
