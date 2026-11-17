@@ -416,6 +416,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.clipCircle(
 
 // ------------------------------------------------------------------ Déflouter
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
     val s by vm.state.collectAsState()

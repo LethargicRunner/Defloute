@@ -41,13 +41,13 @@ object EsrganUpscaler {
      * Agrandit [px] (ARGB, w x h) x4. [onTile] reçoit (tuile faite, total).
      * [checkCancelled] doit lever une exception d'annulation si l'utilisateur a annulé.
      */
-    fun upscale(
+    suspend fun upscale(
         context: Context,
         px: IntArray,
         w: Int,
         h: Int,
         onTile: (Int, Int) -> Unit,
-        checkCancelled: () -> Unit
+        checkCancelled: suspend () -> Unit
     ): Bitmap {
         val env = OrtEnvironment.getEnvironment()
         val modelBytes = context.assets.open(MODEL_ASSET).use { it.readBytes() }
