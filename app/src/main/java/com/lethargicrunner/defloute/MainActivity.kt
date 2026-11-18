@@ -186,8 +186,9 @@ fun HelpDialog(onClose: () -> Unit) {
                 HelpSection(
                     "Onglet « Déflouter »",
                     "1. Appuie sur « Choisir une image ».\n" +
-                        "2. Choisis un mode :\n" +
-                        "• Classique : rapide (quelques secondes), le résultat se met à jour quand tu bouges les réglages.\n" +
+                        "2. Le mode « Auto » (par défaut) analyse la photo (flou, bruit, JPEG, exposition), affiche son diagnostic et applique seul les bonnes corrections. « Manuel » et « IA » donnent la main sur chaque réglage.\n" +
+                        "   Autres modes :\n" +
+                        "• Manuel : rapide (quelques secondes), le résultat se met à jour quand tu bouges les réglages.\n" +
                         "• IA Real-ESRGAN : plus lent (1 à 5 minutes) mais bien plus détaillé. Appuie sur « Lancer l'amélioration IA » ; tu peux mettre en pause, reprendre ou annuler à tout moment.\n" +
                         "3. Compare : le curseur au milieu de l'image montre l'AVANT à gauche et l'APRÈS à droite, glisse-le où tu veux. La vue « Côte à côte » montre les deux versions zoomées en même temps.\n" +
                         "4. Appuie sur « Galerie » (dossier Pictures/Defloute, sans rien choisir) ou « Dossier… » pour choisir où enregistrer : la photo améliorée est ajoutée sans jamais écraser l'original, en JPEG ou en PNG sans perte. Le nom du fichier contient l'heure de lancement du traitement."
@@ -199,9 +200,17 @@ fun HelpDialog(onClose: () -> Unit) {
                         "• Active « Loupe » : glisse ton doigt sur l'image, une loupe circulaire agrandit la zone sous le doigt (pratique pour juger la netteté des détails)."
                 )
                 HelpSection(
+                    "Le mode Auto",
+                    "L'application mesure elle-même le bruit, la compression JPEG, le flou (flou de bougé avec sa direction et sa longueur, ou flou de mise au point) et l'exposition, puis n'applique que les corrections utiles.\n" +
+                        "• Si la photo est nette et correcte, elle n'est pas modifiée.\n" +
+                        "• Le défloutage est évité quand la compression JPEG est forte : il ferait ressortir les blocs.\n" +
+                        "• Le diagnostic et les étapes appliquées sont affichés sous l'image.\n" +
+                        "• « Compléter avec l'IA » enchaîne l'agrandissement IA sur la photo déjà corrigée ; l'app te le conseille quand la photo est abîmée (JPEG marqué, flou important, bruit fort)."
+                )
+                HelpSection(
                     "Les réglages",
-                    "• Force : intensité de la netteté (mode Classique). Le bouton « Auto » la règle selon le flou détecté. Au-delà de 70 %, des halos peuvent apparaître.\n" +
-                        "• Upscale x2 : double la taille de l'image avant le traitement (mode Classique).\n" +
+                    "• Force : intensité de la netteté (mode Manuel). Le bouton « Auto » la règle selon le flou détecté. Au-delà de 70 %, des halos peuvent apparaître.\n" +
+                        "• Upscale x2 : double la taille de l'image avant le traitement (mode Manuel).\n" +
                         "• Réduire le bruit : adoucit le grain sans effacer les contours (filtre bilatéral).\n" +
                         "• Bruit fort (NLM) : filtre non-local means, plus lent mais bien plus efficace sur le gros grain des photos de nuit. Prévu pour les images jusqu'à ~1024 px.\n" +
                         "• Flou de mouvement : détecte la direction du bougé (photo prise en bougeant) et la déconvolue. Désactivé automatiquement si aucune direction dominante n'est trouvée.\n" +
@@ -480,6 +489,9 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
         uri?.let { vm.load(it) }
     }
     val isAi = s.mode == DeblurViewModel.Mode.AI
+    val isAuto = s.mode == DeblurViewModel.Mode.AUTO
+    /** Interface de suivi IA (progression, pause) : en mode IA, ou quand l'IA est lancée depuis le mode Auto. */
+    val showAiUi = isAi || s.aiActive
     val appCtx = vm.getApplication<android.app.Application>()
     // Autorisation d'afficher la notification (Android 13+) : demandée seulement si « Continuer en arrière-plan ».
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
@@ -518,15 +530,20 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
         // --- choix du mode (segmented)
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             SegmentedButton(
-                selected = !isAi, enabled = !s.processing,
+                selected = isAuto, enabled = !s.processing,
+                onClick = { vm.setMode(DeblurViewModel.Mode.AUTO) },
+                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3)
+            ) { Text("Auto") }
+            SegmentedButton(
+                selected = s.mode == DeblurViewModel.Mode.CLASSIC, enabled = !s.processing,
                 onClick = { vm.setMode(DeblurViewModel.Mode.CLASSIC) },
-                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
-            ) { Text("Classique") }
+                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3)
+            ) { Text("Manuel") }
             SegmentedButton(
                 selected = isAi, enabled = !s.processing,
                 onClick = { vm.setMode(DeblurViewModel.Mode.AI) },
-                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
-            ) { Text("IA Real-ESRGAN") }
+                shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3)
+            ) { Text("IA") }
         }
 
         Spacer(Modifier.height(12.dp))
@@ -657,13 +674,17 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
 
         // --- réglages
         SettingsCard {
-            SwitchRow("Réduire le bruit", s.denoise, enabled = !s.processing) { vm.toggleDenoise() }
-            SwitchRow("Bruit fort (NLM, plus lent)", s.nlm, enabled = !s.processing) { vm.toggleNlm() }
-            SwitchRow("Flou de mouvement", s.motion, enabled = !s.processing) { vm.toggleMotion() }
-            SwitchRow("Micro-contraste", s.micro, enabled = !s.processing) { vm.toggleMicro() }
-            SwitchRow("Corriger lumière et contraste", s.tone, enabled = !s.processing) { vm.toggleTone() }
+            if (!isAuto) {
+                SwitchRow("Réduire le bruit", s.denoise, enabled = !s.processing) { vm.toggleDenoise() }
+                SwitchRow("Bruit fort (NLM, plus lent)", s.nlm, enabled = !s.processing) { vm.toggleNlm() }
+                SwitchRow("Flou de mouvement", s.motion, enabled = !s.processing) { vm.toggleMotion() }
+                SwitchRow("Micro-contraste", s.micro, enabled = !s.processing) { vm.toggleMicro() }
+                SwitchRow("Corriger lumière et contraste", s.tone, enabled = !s.processing) { vm.toggleTone() }
+            }
 
-            if (!isAi) {
+            if (isAuto) {
+                AutoPanel(s, onAi = { startAi() })
+            } else if (s.mode == DeblurViewModel.Mode.CLASSIC) {
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Text("Force : ${(s.strength * 100).toInt()} %", style = MaterialTheme.typography.bodySmall)
@@ -690,18 +711,18 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
         // --- progression
         Spacer(Modifier.height(8.dp))
         if (s.processing) {
-            if (isAi && s.progress > 0f) {
+            if (showAiUi && s.progress > 0f) {
                 LinearProgressIndicator(progress = { s.progress }, modifier = Modifier.fillMaxWidth())
             } else {
                 CircularProgressIndicator(Modifier.size(28.dp))
             }
             if (s.stage.isNotEmpty()) Text(s.stage, style = MaterialTheme.typography.bodySmall)
-            if (isAi && s.startedAt > 0L) {
+            if (showAiUi && s.startedAt > 0L) {
                 val hm = SimpleDateFormat("HH:mm", Locale.getDefault())
                 val eta = if (s.etaAt > 0L) " · fin estimée ≈ " + hm.format(Date(s.etaAt)) else ""
                 Text("Lancé à " + hm.format(Date(s.startedAt)) + eta, style = MaterialTheme.typography.bodySmall)
             }
-            if (isAi) {
+            if (showAiUi) {
                 Spacer(Modifier.height(4.dp))
                 Row {
                     Button(onClick = { if (s.paused) vm.resume() else vm.pause() }) {
@@ -753,6 +774,40 @@ private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
     ) {
         Column(Modifier.padding(14.dp), content = content)
     }
+}
+
+/** Mode Auto : affiche le diagnostic de la photo, ce qui a été appliqué, et propose de compléter avec l'IA. */
+@Composable
+private fun AutoPanel(s: DeblurViewModel.State, onAi: () -> Unit) {
+    val d = s.diagnosis
+    Text("Diagnostic automatique", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(4.dp))
+    if (d == null) {
+        Text(
+            if (s.source == null) "Choisis une image : l'analyse et le traitement sont entièrement automatiques."
+            else "Analyse en cours…",
+            style = MaterialTheme.typography.bodySmall
+        )
+    } else {
+        d.summary().forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+        Spacer(Modifier.height(8.dp))
+        Text("Traitement appliqué", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        if (s.autoSteps.isNotEmpty()) {
+            s.autoSteps.forEach { Text("✓ $it", style = MaterialTheme.typography.bodySmall) }
+        } else if (!s.processing) {
+            Text("Aucune correction nécessaire : la photo est laissée telle quelle.", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    Button(onClick = onAi, enabled = s.source != null && !s.processing) {
+        Text("Compléter avec l'IA (×4, plus lent)")
+    }
+    Text(
+        "L'IA reprend la photo corrigée et redessine les détails. Compte 1 à 5 minutes.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
 }
 
 @Composable

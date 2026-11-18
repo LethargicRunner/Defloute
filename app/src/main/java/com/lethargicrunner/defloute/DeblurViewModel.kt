@@ -19,14 +19,14 @@ import kotlinx.coroutines.withContext
 /** ViewModel du défloutage : une image à la fois, avant/après. Deux modes : classique ou IA. */
 class DeblurViewModel(app: Application) : AndroidViewModel(app) {
 
-    enum class Mode { CLASSIC, AI }
+    enum class Mode { AUTO, CLASSIC, AI }
 
     data class State(
         val source: Bitmap? = null,
         val result: Bitmap? = null,
         val processing: Boolean = false,
         val error: String? = null,
-        val mode: Mode = Mode.CLASSIC,
+        val mode: Mode = Mode.AUTO,
         val strength: Float = 0.5f,
         val upscale: Boolean = true,
         val denoise: Boolean = true,
@@ -53,7 +53,13 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         val clipWhite: Float = 0f,
         val clipBlack: Float = 0f,
         /** Information affichée à l'utilisateur (ex. pause ou annulation automatique). */
-        val notice: String? = null
+        val notice: String? = null,
+        /** Diagnostic automatique de la photo source (mode Auto). */
+        val diagnosis: PhotoDiagnosis.Diagnosis? = null,
+        /** Étapes appliquées par le traitement automatique, en clair. */
+        val autoSteps: List<String> = emptyList(),
+        /** Vrai pendant un traitement IA, quel que soit le mode (Auto ou IA). */
+        val aiActive: Boolean = false
     )
 
     private val _state = MutableStateFlow(State())
@@ -77,7 +83,11 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         job?.cancel()
         pauseRequested = false
         update { it.copy(mode = m, processing = false, error = null, result = null, progress = 0f, stage = "", paused = false) }
-        if (m == Mode.CLASSIC && _state.value.source != null) process()
+        if (_state.value.source != null) when (m) {
+            Mode.CLASSIC -> process()
+            Mode.AUTO -> processAuto()
+            else -> Unit
+        }
     }
 
     fun setStrength(v: Float) {
@@ -146,7 +156,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         val st = _state.value
         if (!st.processing) return
         when (policy) {
-            AppSettings.BgPolicy.PAUSE -> if (st.mode == Mode.AI && !st.paused) {
+            AppSettings.BgPolicy.PAUSE -> if ((st.mode == Mode.AI || st.aiActive) && !st.paused) {
                 pause()
                 autoPaused = true
                 update { it.copy(notice = "Traitement mis en pause automatiquement : il reprendra à ton retour dans l'application.") }
@@ -203,7 +213,12 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                         clipWhite = loaded.second.first, clipBlack = loaded.second.second
                     )
                 }
-                if (_state.value.mode == Mode.CLASSIC) process()
+                update { it.copy(diagnosis = null, autoSteps = emptyList()) }
+                when (_state.value.mode) {
+                    Mode.CLASSIC -> process()
+                    Mode.AUTO -> processAuto()
+                    else -> Unit
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OutOfMemoryError) {
@@ -274,7 +289,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         }
         job?.cancel()
         pauseRequested = false
-        update { it.copy(processing = true, error = null, paused = false, progress = 0f, stage = "Préparation…", startedAt = System.currentTimeMillis(), etaAt = 0L, notice = null) }
+        update { it.copy(processing = true, aiActive = true, error = null, paused = false, progress = 0f, stage = "Préparation…", startedAt = System.currentTimeMillis(), etaAt = 0L, notice = null) }
         if (keepAlive) KeepAliveService.start(app)
         job = viewModelScope.launch {
             try {
@@ -292,8 +307,12 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                     ensureActive()
 
                     update { it.copy(stage = "Réduction du bruit et correction de la lumière…") }
-                    var base = prepare(orig, w, h, st.denoise, st.tone, st.nlm, "ai")
-                    if (st.motion) {
+                    var base = if (st.mode == Mode.AUTO) {
+                        // Mode Auto : diagnostic + corrections adaptées avant l'agrandissement IA
+                        AutoRestore.run(orig, w, h, onStage = { s -> update { it.copy(stage = s) } },
+                            checkCancelled = { ensureActive() }).pixels
+                    } else prepare(orig, w, h, st.denoise, st.tone, st.nlm, "ai")
+                    if (st.motion && st.mode != Mode.AUTO) {
                         update { it.copy(stage = "Défloutage directionnel…") }
                         base = MotionDeblur.autoDeblur(base, w, h, strength = 0.8f)
                         ensureActive()
@@ -354,7 +373,51 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                 pauseRequested = false
                 update { it.copy(processing = false, paused = false, progress = 0f, stage = "", error = "Erreur IA : " + (e.message ?: e.javaClass.simpleName)) }
             } finally {
+                update { it.copy(aiActive = false) }
                 if (keepAlive) KeepAliveService.stop(app)
+            }
+        }
+    }
+
+    /** Mode Auto : diagnostic de la photo, puis corrections adaptées (flou, bruit, JPEG, exposition). */
+    fun processAuto() {
+        val src = _state.value.source ?: return
+        if (_state.value.mode != Mode.AUTO) return
+        job?.cancel()
+        update {
+            it.copy(
+                processing = true, error = null, progress = 0f, stage = "Analyse de la photo…",
+                startedAt = System.currentTimeMillis(), etaAt = 0L, notice = null, autoSteps = emptyList()
+            )
+        }
+        job = viewModelScope.launch {
+            try {
+                val res = withContext(Dispatchers.Default) {
+                    val (px, w) = ImageLoader.toPixels(src)
+                    val h = src.height
+                    val diag = PhotoDiagnosis.analyse(px, w, h)
+                    update { it.copy(diagnosis = diag, stage = "Traitement…") }
+                    ensureActive()
+                    val out = AutoRestore.run(px, w, h, diag,
+                        onStage = { s -> update { it.copy(stage = s) } },
+                        checkCancelled = { ensureActive() })
+                    val bmp = ImageLoader.fromPixels(out.pixels, w, h)
+                    Triple(bmp, out, Pair(scoreOf(src), scoreOf(bmp)))
+                }
+                update {
+                    it.copy(
+                        result = res.first, processing = false, stage = "",
+                        autoSteps = res.second.steps,
+                        scoreBefore = BlurDetector.displayScore(res.third.first),
+                        scoreAfter = BlurDetector.displayScore(res.third.second)
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: OutOfMemoryError) {
+                update { it.copy(processing = false, error = MEMORY_ERROR) }
+            } catch (e: Throwable) {
+                update { it.copy(processing = false, error = e.message ?: "Erreur de traitement") }
             }
         }
     }
