@@ -20,6 +20,7 @@ object AppSettings {
     private const val FILE = "defloute_settings"
     private const val KEY_LOCK = "lock_rotation"
     private const val KEY_BG = "bg_policy"
+    private const val KEY_ACCEL = "ai_accel"
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -38,5 +39,12 @@ object AppSettings {
 
     fun setBgPolicy(ctx: Context, value: BgPolicy) {
         prefs(ctx).edit().putString(KEY_BG, value.name).apply()
+    }
+
+    /** Accélération matérielle (NNAPI) de l'IA, toujours vérifiée sur la première tuile. */
+    fun aiAccel(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_ACCEL, true)
+
+    fun setAiAccel(ctx: Context, value: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_ACCEL, value).apply()
     }
 }

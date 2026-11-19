@@ -12,8 +12,8 @@ android {
         applicationId = "com.lethargicrunner.defloute"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.10.0"
+        versionCode = 14
+        versionName = "0.12.0"
 
         // ONNX Runtime embarque des bibliothèques natives par architecture : on ne garde que les
         // téléphones modernes (arm64) pour garder l'APK léger.

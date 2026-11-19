@@ -2,9 +2,11 @@ package com.lethargicrunner.defloute
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -60,12 +62,17 @@ class MainActivity : ComponentActivity() {
     /** Même instance que celle de l'écran Déflouter (ViewModel rattaché à l'activité). */
     private val deblurVm: DeblurViewModel by viewModels()
 
+    /** Onglet affiché (0 = Déflouter) ; hissé ici pour pouvoir y revenir quand une photo est partagée vers l'app. */
+    private val tabState = mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(application)
         applyOrientationLock(this, AppSettings.lockRotation(this))
         setContent {
             DeflouteTheme {
-                var tab by remember { mutableIntStateOf(0) }
+                var tab by tabState
+                var crashPrompt by remember { mutableStateOf(CrashLog.hasPendingCrash(this@MainActivity)) }
                 var showHelp by remember { mutableStateOf(false) }
                 var showSettings by remember { mutableStateOf(false) }
                 Scaffold(
@@ -81,6 +88,22 @@ class MainActivity : ComponentActivity() {
                         if (tab == 0) DeblurScreen() else ScanScreen()
                     }
                 }
+                if (crashPrompt) {
+                    AlertDialog(
+                        onDismissRequest = { CrashLog.clearPending(this@MainActivity); crashPrompt = false },
+                        title = { Text("L'application s'est arrêtée") },
+                        text = { Text("Un plantage a eu lieu lors de la dernière utilisation. Le journal contient les détails techniques : partage-le pour que ce soit corrigé.") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                startActivity(CrashLog.shareIntent(this@MainActivity))
+                                CrashLog.clearPending(this@MainActivity); crashPrompt = false
+                            }) { Text("Partager le journal") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { CrashLog.clearPending(this@MainActivity); crashPrompt = false }) { Text("Ignorer") }
+                        }
+                    )
+                }
                 if (showHelp) HelpDialog(onClose = { showHelp = false })
                 if (showSettings) SettingsDialog(
                     onClose = { showSettings = false },
@@ -88,6 +111,28 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        if (savedInstanceState == null) handleShareIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShareIntent(intent)
+    }
+
+    /** Photo reçue par « Partager » ou « Ouvrir avec » depuis la galerie : chargée directement dans Déflouter. */
+    private fun handleShareIntent(intent: Intent?) {
+        val i = intent ?: return
+        val uri: Uri? = when (i.action) {
+            Intent.ACTION_SEND ->
+                if (Build.VERSION.SDK_INT >= 33) i.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                else @Suppress("DEPRECATION") i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+            Intent.ACTION_VIEW -> i.data
+            else -> null
+        }
+        if (uri == null) return
+        tabState.intValue = 0
+        deblurVm.load(uri)
     }
 
     override fun onStop() {
@@ -185,7 +230,7 @@ fun HelpDialog(onClose: () -> Unit) {
                 )
                 HelpSection(
                     "Onglet « Déflouter »",
-                    "1. Appuie sur « Choisir une image ».\n" +
+                    "1. Appuie sur « Choisir une image », ou partage une photo depuis la galerie vers Défloute (Partager, puis Défloute).\n" +
                         "2. Le mode « Auto » (par défaut) analyse la photo (flou, bruit, JPEG, exposition), affiche son diagnostic et applique seul les bonnes corrections. « Manuel » et « IA » donnent la main sur chaque réglage.\n" +
                         "   Autres modes :\n" +
                         "• Manuel : rapide (quelques secondes), le résultat se met à jour quand tu bouges les réglages.\n" +
@@ -517,7 +562,7 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
         uri?.let { saveUri ->
             val ctx = vm.getApplication<android.app.Application>()
             s.result?.let { bmp ->
-                val done = ImageSaver.saveToTree(ctx, saveUri, bmp, "photo", png = savePng, stamp = ImageSaver.stampOf(s.startedAt))
+                val done = ImageSaver.saveToTree(ctx, saveUri, bmp, "photo", png = savePng, stamp = ImageSaver.stampOf(s.startedAt), meta = s.sourceMeta)
                 savedMsg = if (done != null) "Enregistré dans le dossier choisi." else "Échec de l'enregistrement dans ce dossier."
             }
         }
@@ -747,7 +792,7 @@ fun DeblurScreen(vm: DeblurViewModel = viewModel()) {
                     Button(onClick = {
                         val ctx = vm.getApplication<android.app.Application>()
                         s.result?.let { bmp ->
-                            val done = ImageSaver.saveToGallery(ctx, bmp, "photo", png = savePng, stamp = ImageSaver.stampOf(s.startedAt))
+                            val done = ImageSaver.saveToGallery(ctx, bmp, "photo", png = savePng, stamp = ImageSaver.stampOf(s.startedAt), meta = s.sourceMeta)
                             savedMsg = if (done != null) "Enregistré dans la galerie (Pictures/Defloute)." else "Échec de l'enregistrement."
                         }
                     }) { Text("Galerie") }
@@ -933,6 +978,32 @@ fun SettingsDialog(onClose: () -> Unit, onLockChanged: (Boolean) -> Unit) {
                         })
                         Text(label, style = MaterialTheme.typography.bodyMedium)
                     }
+                }
+                Spacer(Modifier.height(16.dp))
+                var accel by remember { mutableStateOf(AppSettings.aiAccel(ctx)) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = accel, onCheckedChange = { accel = it; AppSettings.setAiAccel(ctx, it) })
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text("Accélération matérielle de l'IA", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Utilise la puce graphique ou neuronale du téléphone si elle est plus rapide. Vérifiée sur la première tuile : si le résultat diffère ou n'est pas plus rapide, l'app reste sur le processeur.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Text("Journal d'erreurs", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Les plantages et les erreurs de traitement sont enregistrés sur le téléphone. Partage le journal pour qu'ils soient corrigés.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { ctx.startActivity(CrashLog.shareIntent(ctx)) }) { Text("Partager le journal") }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = { CrashLog.clear(ctx) }) { Text("Effacer") }
                 }
             }
         }

@@ -59,7 +59,9 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         /** Étapes appliquées par le traitement automatique, en clair. */
         val autoSteps: List<String> = emptyList(),
         /** Vrai pendant un traitement IA, quel que soit le mode (Auto ou IA). */
-        val aiActive: Boolean = false
+        val aiActive: Boolean = false,
+        /** Date de prise de vue, GPS, appareil de la photo d'origine (recopiés dans le fichier enregistré). */
+        val sourceMeta: ImageSaver.SourceMeta? = null
     )
 
     private val _state = MutableStateFlow(State())
@@ -201,15 +203,17 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             update { it.copy(processing = true, error = null, stage = "Chargement…") }
             try {
                 val loaded = withContext(Dispatchers.IO) {
-                    ImageLoader.decode(getApplication(), uri, maxDim = 1536)?.bitmap?.let { b ->
+                    // Auto et IA décodent jusqu'à 2048 px (plus de détails) ; le mode Manuel reste à 1536 (il agrandit ×2)
+                    ImageLoader.decode(getApplication(), uri, maxDim = if (_state.value.mode == Mode.CLASSIC) 1536 else 2048)?.bitmap?.let { b ->
                         Pair(b, ImageEnhancer.clippedFractions(ImageLoader.toPixels(b).first))
                     }
                 } ?: throw IllegalArgumentException("Image illisible")
                 val bmp = loaded.first
+                val meta = withContext(Dispatchers.IO) { ImageSaver.readMeta(getApplication(), uri) }
                 prepared = null; preparedKey = null
                 update {
                     it.copy(
-                        source = bmp, result = null, processing = false, stage = "",
+                        source = bmp, sourceMeta = meta, result = null, processing = false, stage = "",
                         clipWhite = loaded.second.first, clipBlack = loaded.second.second
                     )
                 }
@@ -222,8 +226,10 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OutOfMemoryError) {
+                CrashLog.log(getApplication<Application>(), "Mémoire insuffisante (mode ${_state.value.mode})", e)
                 update { it.copy(processing = false, error = MEMORY_ERROR) }
             } catch (e: Exception) {
+                CrashLog.log(getApplication<Application>(), "Erreur de chargement", e)
                 update { it.copy(processing = false, error = e.message ?: "Erreur de chargement") }
             }
         }
@@ -240,8 +246,10 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 if (debounceMs > 0) delay(debounceMs)
                 val res = withContext(Dispatchers.Default) {
-                    val (orig, w) = ImageLoader.toPixels(src)
-                    val h = src.height
+                    // le mode Manuel agrandit x2 : on limite la source à 1536 px pour rester dans la mémoire
+                    val srcW = limitSize(src, 1536)
+                    val (orig, w) = ImageLoader.toPixels(srcW)
+                    val h = srcW.height
                     ensureActive()
                     var base = prepare(orig, w, h, st.denoise, st.tone, st.nlm, "classic")
                     if (st.motion) {
@@ -259,7 +267,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     val bmp = ImageLoader.fromPixels(outPx, outW, outH)
                     // scores comparables : mêmes dimensions réduites avant / après
-                    Triple(bmp, scoreOf(src), scoreOf(bmp))
+                    Triple(bmp, scoreOf(srcW), scoreOf(bmp))
                 }
                 update {
                     it.copy(
@@ -271,8 +279,10 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OutOfMemoryError) {
+                CrashLog.log(getApplication<Application>(), "Mémoire insuffisante (mode ${_state.value.mode})", e)
                 update { it.copy(processing = false, error = MEMORY_ERROR) }
             } catch (e: Throwable) {
+                CrashLog.log(getApplication<Application>(), "Erreur de traitement (mode ${_state.value.mode})", e)
                 update { it.copy(processing = false, error = e.message ?: "Erreur de traitement") }
             }
         }
@@ -329,7 +339,7 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
                             update {
                                 it.copy(
                                     progress = done.toFloat() / total,
-                                    stage = "IA : tuile $done / $total",
+                                    stage = "IA (${EsrganUpscaler.backend}) : tuile $done / $total",
                                     etaAt = eta
                                 )
                             }
@@ -367,9 +377,11 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OutOfMemoryError) {
+                CrashLog.log(getApplication<Application>(), "Mémoire insuffisante (mode ${_state.value.mode})", e)
                 pauseRequested = false
                 update { it.copy(processing = false, paused = false, progress = 0f, stage = "", error = MEMORY_ERROR) }
             } catch (e: Throwable) {
+                CrashLog.log(getApplication<Application>(), "Erreur de traitement (mode ${_state.value.mode})", e)
                 pauseRequested = false
                 update { it.copy(processing = false, paused = false, progress = 0f, stage = "", error = "Erreur IA : " + (e.message ?: e.javaClass.simpleName)) }
             } finally {
@@ -415,8 +427,10 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OutOfMemoryError) {
+                CrashLog.log(getApplication<Application>(), "Mémoire insuffisante (mode ${_state.value.mode})", e)
                 update { it.copy(processing = false, error = MEMORY_ERROR) }
             } catch (e: Throwable) {
+                CrashLog.log(getApplication<Application>(), "Erreur de traitement (mode ${_state.value.mode})", e)
                 update { it.copy(processing = false, error = e.message ?: "Erreur de traitement") }
             }
         }
@@ -434,6 +448,14 @@ class DeblurViewModel(app: Application) : AndroidViewModel(app) {
         if (cur === orig) cur = orig.copyOf()
         prepared = cur; preparedKey = key
         return cur
+    }
+
+    /** Version de [b] dont le plus grand côté ne dépasse pas [maxDim] (la même image si elle est déjà assez petite). */
+    private fun limitSize(b: Bitmap, maxDim: Int): Bitmap {
+        val l = maxOf(b.width, b.height)
+        if (l <= maxDim) return b
+        val k = maxDim.toFloat() / l
+        return Bitmap.createScaledBitmap(b, (b.width * k).toInt().coerceAtLeast(1), (b.height * k).toInt().coerceAtLeast(1), true)
     }
 
     /** Score de netteté sur une version réduite (≤ 512 px) : comparable entre deux tailles d'image. */
